@@ -270,8 +270,14 @@ def _check_ci(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], li
         defects.append(f"无法从 URL 解析项目: {repo_url}")
         return problems, defects
 
+    # First poll: if no pipelines exist AND the branch itself doesn't exist
+    # on the remote, return immediately as a defect (no CI configured for
+    # a non-existent branch). This prevents a 900s hang when the worker
+    # never pushed the branch.
     timeout = decl.verification.timeout_s
     deadline = time.time() + timeout
+    empty_polls = 0
+    MAX_EMPTY_POLLS = 3  # After 3 consecutive empty results (~45s), give up
 
     while time.time() < deadline:
         pipelines = _gitlab_pipelines(project_id, branch, sha)
@@ -281,7 +287,13 @@ def _check_ci(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], li
             return problems, defects
 
         if not pipelines:
-            # No pipeline yet — keep polling
+            # No pipeline yet — poll a few times, then return as defect
+            empty_polls += 1
+            if empty_polls >= MAX_EMPTY_POLLS:
+                defects.append(
+                    f"无流水线定义: branch={branch} ({empty_polls} 次轮询均为空)"
+                )
+                return problems, defects
             time.sleep(PIPELINE_POLL_INTERVAL)
             continue
 
