@@ -197,7 +197,10 @@ def load_declarations(skills: Optional[list[str]], task: Any = None) -> Declarat
             for art in cc.get("artifacts", []) or []:
                 if isinstance(art, dict):
                     path = _substitute(str(art.get("path", "")), task)
-                    min_b = int(art.get("min_bytes", 0))
+                    try:
+                        min_b = int(art.get("min_bytes", 0))
+                    except (ValueError, TypeError):
+                        min_b = 0  # malformed min_bytes — treat as 0 (will be caught by adjudicator as defect)
                     all_artifacts.append(ArtifactSpec(path=path, min_bytes=min_b))
 
             # git
