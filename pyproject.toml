@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "talos"
+version = "0.1.0"
+description = "Talos — autonomous task execution system for Hermes Kanban"
+requires-python = ">=3.11"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+talos-executor = "talos.executor.main:main"
+
+[tool.setuptools.packages.find]
+include = ["talos*"]
