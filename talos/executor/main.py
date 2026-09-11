@@ -2,5 +2,11 @@
 
 from talos.executor.loop import run_executor
 
-if __name__ == "__main__":
+
+def main() -> None:
+    """Console-script entry point (pyproject.toml ``[project.scripts]``)."""
     run_executor()
+
+
+if __name__ == "__main__":
+    main()
