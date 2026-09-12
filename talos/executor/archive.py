@@ -85,9 +85,11 @@ def archive(
     if trace_src_dir.exists() and trace_src_dir.is_dir():
         # Copy all .jsonl files from trace dir
         for tf in trace_src_dir.glob("*.jsonl"):
-            shutil.copy2(tf, adir / tf.name)
-        # Also copy as trace.jsonl if only one file
-        jsonl_files = list(adir.glob("*.jsonl"))
+            # Rename to <task_id>.<run_id>.jsonl for uniqueness
+            dest_name = f"{task_id}.{run_id}.{tf.name}"
+            shutil.copy2(tf, adir / dest_name)
+        # Also copy as trace.jsonl for convenience
+        jsonl_files = list(trace_src_dir.glob("*.jsonl"))
         if jsonl_files and not (adir / "trace.jsonl").exists():
             shutil.copy2(jsonl_files[0], adir / "trace.jsonl")
     else:

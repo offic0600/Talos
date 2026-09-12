@@ -134,7 +134,10 @@ def mint_gitlab_token(
 
 
 def revoke_gitlab_token(task_id: str, run_id: int, creds_dir: Path) -> None:
-    """Revoke the project access token for this task (§8 cleanup)."""
+    """Revoke the project access token for this task (§8 cleanup).
+
+    Retries up to 3 times on failure (§8, M19: no token leakage).
+    """
     meta_file = creds_dir / "token-meta.json"
     if not meta_file.exists():
         return
@@ -146,14 +149,23 @@ def revoke_gitlab_token(task_id: str, run_id: int, creds_dir: Path) -> None:
 
     token_id = meta.get("token_id")
     project_id = meta.get("project_id")
+    token_name = meta.get("token_name")
     if token_id and project_id and GITLAB_ADMIN_TOKEN:
-        try:
-            _gitlab_api("DELETE", f"/projects/{project_id}/access_tokens/{token_id}")
-            log_event("cleaned", task_id=task_id, run_id=run_id,
-                      extra={"revoked_token": meta.get("token_name")})
-        except RuntimeError as e:
-            log_event("error", task_id=task_id, run_id=run_id,
-                      msg=f"revoke token failed: {e}")
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                _gitlab_api("DELETE", f"/projects/{project_id}/access_tokens/{token_id}")
+                log_event("cleaned", task_id=task_id, run_id=run_id,
+                          extra={"revoked_token": token_name, "attempt": attempt})
+                break
+            except RuntimeError as e:
+                if attempt < max_retries:
+                    log_event("error", task_id=task_id, run_id=run_id,
+                              msg=f"revoke token attempt {attempt} failed: {e}; retrying...")
+                    time.sleep(2 * attempt)
+                else:
+                    log_event("error", task_id=task_id, run_id=run_id,
+                              msg=f"revoke token FAILED after {max_retries} attempts: {e}")
 
     # Remove credential files
     for f in creds_dir.glob("*"):
@@ -161,6 +173,63 @@ def revoke_gitlab_token(task_id: str, run_id: int, creds_dir: Path) -> None:
             f.unlink()
         except OSError:
             pass
+
+
+def cleanup_orphan_tokens() -> int:
+    """Scan GitLab for talos-* tokens not belonging to any live run; revoke them.
+
+    Called at executor startup (§8, M19: no token leakage).
+    Returns the number of tokens revoked.
+    """
+    if not GITLAB_ADMIN_TOKEN:
+        return 0
+
+    # Collect all active runs from the kanban DB
+    import sqlite3
+    from talos.executor.constants import KANBAN_DB
+    live_token_names: set[str] = set()
+    try:
+        conn = sqlite3.connect(str(KANBAN_DB))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, current_run_id FROM tasks WHERE status = 'running'"
+        ).fetchall()
+        conn.close()
+        for row in rows:
+            if row["current_run_id"]:
+                live_token_names.add(f"talos-{row['id']}-{row['current_run_id']}")
+    except Exception:
+        pass
+
+    # Scan all projects the executor has used (talos-pilot + Talos)
+    project_ids = ["16280", "16288"]  # talos-pilot + Talos
+    revoked = 0
+    for pid in project_ids:
+        try:
+            tokens = _gitlab_api("GET", f"/projects/{pid}/access_tokens")
+        except RuntimeError:
+            continue
+        if not isinstance(tokens, list):
+            continue
+        for tok in tokens:
+            name = tok.get("name", "")
+            if not name.startswith("talos-"):
+                continue
+            if name in live_token_names:
+                continue  # Belongs to a live run — skip
+            tok_id = tok.get("id")
+            if not tok_id:
+                continue
+            try:
+                _gitlab_api("DELETE", f"/projects/{pid}/access_tokens/{tok_id}")
+                log_event("cleaned", extra={"orphan_token_revoked": name, "project": pid})
+                revoked += 1
+            except RuntimeError as e:
+                log_event("error", msg=f"failed to revoke orphan token {name}: {e}")
+
+    if revoked:
+        log_event("cleaned", extra={"orphan_tokens_revoked": revoked})
+    return revoked
 
 
 def copy_platform_tokens(creds_dir: Path) -> None:

@@ -269,6 +269,12 @@ def run_executor(
     print(f"[talos-executor] EXECUTOR_LOG={EXECUTOR_LOG}")
     print(f"[talos-executor] tick interval={interval}s")
 
+    # Cleanup orphan tokens at startup (§8, M19)
+    from talos.executor.credentials import cleanup_orphan_tokens
+    orphan_count = cleanup_orphan_tokens()
+    if orphan_count:
+        print(f"[talos-executor] revoked {orphan_count} orphan token(s)")
+
     from hermes_cli import kanban_db_connect as kbc
 
     spawn_fn: Optional[Any] = None

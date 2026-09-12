@@ -152,10 +152,17 @@ def _build_mounts(task: Any, decl: Declaration, tdir: Path, creds: dict) -> list
     """Build Docker ``-v`` mount arguments (§5.1 mount whitelist, I9)."""
     mounts: list[str] = []
 
-    # Plugins (ro)
+    # Plugins (ro) — includes talos plugins (trace_collect, path_protect, etc.)
     plugins = HOME / "plugins"
     if plugins.exists():
         mounts.append(f"{plugins}:{CONTAINER_HH}/plugins:ro")
+
+    # Talos-specific plugins (ro) — trace_collect, path_protect, skill_protect
+    # These are not in the worker image; mount from the Talos repo.
+    # Hermes discovers plugins by scanning HERMES_HOME/plugins/<name>/plugin.yaml
+    talos_plugins = Path(__file__).resolve().parent.parent / "plugins"
+    if talos_plugins.exists():
+        mounts.append(f"{talos_plugins}:{CONTAINER_HH}/plugins/talos:ro")
 
     # Managed skills (ro) — only the skills declared on this task
     for skill_name in (task.skills or []):
