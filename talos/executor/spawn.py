@@ -235,8 +235,9 @@ def _build_docker_command(
     # but `-p` is --provider in hermes CLI, not a profile. Correct syntax is
     # `hermes chat --cli --accept-hooks -q "..."`. This is an implementation
     # fix, not a design change.
+    # With --entrypoint sh, CMD args are ["-c", '...'] (not ["sh", "-c", ...]).
     cmd.extend([
-        "sh", "-c",
+        "-c",
         'hermes chat --cli --accept-hooks -q "$(cat /task/context.md)"',
     ])
 
