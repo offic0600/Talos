@@ -209,10 +209,10 @@ class TestAdjudicateFlowBlocked:
         verdict = adjudicate(tid, run_id, bundle, decl)
         new_status = finalize(conn, tid, run_id, verdict)
 
-        assert verdict.status == "error"
+        assert verdict.status == "unmet"  # §7 v2: blocked → unmet path, not error
         assert verdict.result_status == "blocked"
-        # block_task(kind=capability) → blocked (first occurrence)
-        assert new_status in ("blocked", "triage")
+        # _record_task_failure → ready (first occurrence, not blocked/triage)
+        assert new_status in ("ready", "blocked")
 
 
 class TestAdjudicateFlowArchive:

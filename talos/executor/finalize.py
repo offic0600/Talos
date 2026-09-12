@@ -2,19 +2,18 @@
 
 The executor calls ONLY these kernel APIs (I2 — executor is the sole writer):
   - ``kb.complete_task`` — pass / degraded → done
-  - ``_record_task_failure`` — unmet → requeue or block
-  - ``kb.block_task`` + ``_route_block`` — blocked → triage on recurrence
+  - ``_record_task_failure`` — unmet / error / status=blocked → requeue or block
   - ``kb.request_review`` — result.json request_review=true
   - ``kb.add_comment`` — verdict comment
   - ``kb.create_task`` / ``kb.link_tasks`` — subtasks from result.json
 
-Terminal state routing (§7):
+Terminal state routing (§7 v2):
   pass        → complete_task → done
   degraded    → complete_task (metadata marks degraded_checks) → done
-  unmet (<limit) → _record_task_failure(release_claim, end_run) → ready (requeue)
-  unmet (≥limit) → _record_task_failure(force_trip) → blocked → block_task → triage
-  error       → block_task → triage
-  result.status=blocked → block_task(kind=capability) → triage
+  unmet (<limit) → _record_task_failure → ready (requeue)
+  unmet (≥limit) → _record_task_failure → blocked (kernel 断路)
+  error       → _record_task_failure(error="校验器故障：…") → same as unmet
+  result.status=blocked → _record_task_failure(error=summary) → same as unmet
 """
 
 from __future__ import annotations
@@ -57,16 +56,10 @@ def _format_comment(verdict: Verdict, task_id: str) -> str:
         return "\n".join(parts)
 
     elif verdict.status == "error":
-        if verdict.result_status == "blocked":
-            parts = ["[执行器] 任务自报 blocked，转人工"]
-            if verdict.summary:
-                parts.append(f"Worker summary: {verdict.summary[:500]}")
-            return "\n".join(parts)
-        else:
-            parts = ["[执行器] 校验器故障，转人工"]
-            if verdict.defects:
-                parts.append("; ".join(verdict.defects[:5]))
-            return "\n".join(parts)
+        parts = ["[执行器] 校验器故障"]
+        if verdict.defects:
+            parts.append("; ".join(verdict.defects[:5]))
+        return "\n".join(parts)
 
     return f"[执行器] 裁决: {verdict.status}"
 
@@ -183,8 +176,12 @@ def finalize(
             new_status = "unknown"
 
     elif verdict.status == "unmet":
-        # → requeue (ready) or blocked (at limit)
-        error_msg = "; ".join(verdict.problems[:10])[:500]
+        # → requeue (ready) or blocked (at limit) via _record_task_failure (§7 v2)
+        # error = problems list or worker summary for status=blocked
+        if verdict.result_status == "blocked":
+            error_msg = verdict.summary[:500]
+        else:
+            error_msg = "; ".join(verdict.problems[:10])[:500]
         try:
             blocked = _record_task_failure(
                 conn, task_id, error_msg,
@@ -198,72 +195,33 @@ def finalize(
                     "run_id": run_id,
                 },
             )
-            if blocked:
-                # _record_task_failure set status to blocked.
-                # Now apply block_task to route through _route_block for
-                # recurrence tracking → triage if needed.
-                try:
-                    kb.block_task(conn, task_id, reason=error_msg,
-                                  kind="transient", expected_run_id=run_id)
-                except Exception:
-                    pass
-                # Check if it went to triage
-                task = kb.get_task(conn, task_id)
-                new_status = task.status if task else "blocked"
-                if new_status == "blocked":
-                    # Not triage yet — consecutive_failures hit limit but
-                    # block_recurrences hasn't. The task is blocked.
-                    log_event("finalized", task_id=task_id, run_id=run_id,
-                              extra={"action": "blocked_at_limit"})
-                else:
-                    log_event("finalized", task_id=task_id, run_id=run_id,
-                              extra={"action": "triage"})
-            else:
-                new_status = "ready"
+            new_status = "blocked" if blocked else "ready"
         except Exception as e:
             log_event("error", task_id=task_id, run_id=run_id,
                       msg=f"_record_task_failure failed: {e}")
             new_status = "unknown"
 
     elif verdict.status == "error":
-        if verdict.result_status == "blocked":
-            # Worker self-reported blocked → triage via block_task
-            try:
-                kb.block_task(conn, task_id,
-                              reason=f"worker blocked: {verdict.summary[:300]}",
-                              kind="capability",
-                              expected_run_id=run_id)
-                task = kb.get_task(conn, task_id)
-                new_status = task.status if task else "triage"
-            except Exception as e:
-                log_event("error", task_id=task_id, run_id=run_id,
-                          msg=f"block_task (capability) failed: {e}")
-                new_status = "unknown"
-        else:
-            # Checker error → triage
-            error_msg = "; ".join(verdict.defects[:5])[:500]
-            try:
-                # Force-trip through _record_task_failure to blocked,
-                # then block_task for routing.
-                _record_task_failure(
-                    conn, task_id, error_msg,
-                    outcome="checker_error",
-                    force_trip=True,
-                    release_claim=True,
-                    end_run=True,
-                    event_payload_extra={"verdict": "error"},
-                )
-                try:
-                    kb.block_task(conn, task_id, reason=error_msg,
-                                  kind="transient", expected_run_id=run_id)
-                except Exception:
-                    pass
-                task = kb.get_task(conn, task_id)
-                new_status = task.status if task else "triage"
-            except Exception as e:
-                log_event("error", task_id=task_id, run_id=run_id,
-                          msg=f"checker_error finalize failed: {e}")
-                new_status = "unknown"
+        # Checker error → same path as unmet: _record_task_failure (§7 v2)
+        # error = "校验器故障：<defects>"
+        error_msg = f"校验器故障: {'; '.join(verdict.defects[:5])}"[:500]
+        try:
+            blocked = _record_task_failure(
+                conn, task_id, error_msg,
+                outcome="checker_error",
+                failure_limit=failure_limit,
+                release_claim=True,
+                end_run=True,
+                event_payload_extra={
+                    "verdict": "error",
+                    "run_id": run_id,
+                },
+            )
+            new_status = "blocked" if blocked else "ready"
+        except Exception as e:
+            log_event("error", task_id=task_id, run_id=run_id,
+                      msg=f"_record_task_failure (error) failed: {e}")
+            new_status = "unknown"
 
     # Create subtasks from result.json
     _create_subtasks(conn, task_id, verdict)

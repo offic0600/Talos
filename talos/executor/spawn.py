@@ -30,6 +30,7 @@ from talos.executor.constants import (
 )
 from talos.executor.credentials import mint_credentials
 from talos.executor.declarations import Declaration, _extract_repo, load_declarations
+from talos.executor.sentinel import start_sentinel
 
 
 def _build_context_md(conn: Any, task: Any, decl: Declaration) -> str:
@@ -259,41 +260,16 @@ def make_spawn_fn(conn: Any):
         context_md = _build_context_md(conn, task, decl)
         (tdir / "context.md").write_text(context_md, encoding="utf-8")
 
-        # Build and run docker command
+        # Build docker command
         cmd = _build_docker_command(task, decl, tdir, creds, repo_url)
-        try:
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=60,
-            )
-        except subprocess.TimeoutExpired:
-            log_event("error", task_id=task.id, run_id=run_id,
-                      msg="docker run timed out", duration_ms=(time.time() - t0) * 1000)
-            return None
 
-        if result.returncode != 0:
-            log_event("error", task_id=task.id, run_id=run_id,
-                      msg=f"docker run failed: {result.stderr.strip()[:500]}",
-                      duration_ms=(time.time() - t0) * 1000)
-            return None
-
-        # Get the container's main PID
-        cname = container_name(task.id, run_id)
-        try:
-            pid_result = subprocess.run(
-                ["docker", "inspect", "--format", "{{.State.Pid}}", cname],
-                capture_output=True, text=True, timeout=10,
-            )
-            if pid_result.returncode == 0:
-                pid = int(pid_result.stdout.strip())
-            else:
-                # Container might have exited already; use a sentinel
-                pid = os.getpid()
-        except (ValueError, subprocess.TimeoutExpired):
-            pid = os.getpid()
+        # Start sentinel process (forks; sentinel runs docker run, waits for
+        # container exit, then waits for adjudication marker — §3, I8)
+        pid = start_sentinel(task.id, run_id, tdir, cmd)
 
         log_event("dispatched", task_id=task.id, run_id=run_id,
                   duration_ms=(time.time() - t0) * 1000,
-                  extra={"container": cname, "pid": pid})
+                  extra={"container": container_name(task.id, run_id), "sentinel_pid": pid})
         return pid
 
     return spawn_fn

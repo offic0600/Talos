@@ -47,18 +47,20 @@ def archive(
     if bundle.result_path and bundle.result_path.exists():
         shutil.copy2(bundle.result_path, adir / "result.json")
 
-    # 2. state.db — look in workspace or out
+    # 2. state.db — from tdir (collected from container HERMES_HOME)
     state_db_src = None
-    if bundle.workspace_path:
-        candidate = bundle.workspace_path / "state.db"
-        if candidate.exists():
-            state_db_src = candidate
+    # Primary: tdir/state.db (copied by collect from container HERMES_HOME)
+    candidate = tdir / "state.db"
+    if candidate.exists():
+        state_db_src = candidate
+    if not state_db_src:
+        # Fallback: workspace or out dir
+        if bundle.workspace_path:
+            candidate = bundle.workspace_path / "state.db"
+            if candidate.exists():
+                state_db_src = candidate
     if not state_db_src:
         candidate = tdir / "out" / "state.db"
-        if candidate.exists():
-            state_db_src = candidate
-    if not state_db_src:
-        candidate = tdir / "state.db"
         if candidate.exists():
             state_db_src = candidate
     if state_db_src:
@@ -78,18 +80,29 @@ def archive(
             encoding="utf-8",
         )
 
-    # 5. Trace files — look in workspace and out
-    trace_src = None
-    if bundle.workspace_path:
-        candidate = bundle.workspace_path / "trace.jsonl"
-        if candidate.exists():
-            trace_src = candidate
-    if not trace_src:
-        candidate = tdir / "out" / "trace.jsonl"
-        if candidate.exists():
-            trace_src = candidate
-    if trace_src:
-        shutil.copy2(trace_src, adir / "trace.jsonl")
+    # 5. Trace files — from tdir/trace/ (collected from container HERMES_HOME/trace/)
+    trace_src_dir = tdir / "trace"
+    if trace_src_dir.exists() and trace_src_dir.is_dir():
+        # Copy all .jsonl files from trace dir
+        for tf in trace_src_dir.glob("*.jsonl"):
+            shutil.copy2(tf, adir / tf.name)
+        # Also copy as trace.jsonl if only one file
+        jsonl_files = list(adir.glob("*.jsonl"))
+        if jsonl_files and not (adir / "trace.jsonl").exists():
+            shutil.copy2(jsonl_files[0], adir / "trace.jsonl")
+    else:
+        # Fallback: look in workspace and out
+        trace_src = None
+        if bundle.workspace_path:
+            candidate = bundle.workspace_path / "trace.jsonl"
+            if candidate.exists():
+                trace_src = candidate
+        if not trace_src:
+            candidate = tdir / "out" / "trace.jsonl"
+            if candidate.exists():
+                trace_src = candidate
+        if trace_src:
+            shutil.copy2(trace_src, adir / "trace.jsonl")
 
     # 6. Contract trace
     contract_src = None

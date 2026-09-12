@@ -806,10 +806,11 @@ class TestDocTaskAdjudication:
 class TestBlockedStatusTriage:
     """Result file status=blocked → triage, not done (M14)."""
 
-    def test_blocked_status_routes_to_error_verdict(self, tmp_path):
-        """Worker reports status=blocked → verdict status=error, result_status=blocked.
+    def test_blocked_status_routes_to_unmet_verdict(self, tmp_path):
+        """Worker reports status=blocked → verdict status=unmet (§5.4, §7 v2, M14).
 
-        The finalize() function then routes this to triage via block_task(kind=capability).
+        result.status=blocked uses the same _record_task_failure path as unmet,
+        with error=worker's summary. NOT block_task, NOT error/triage.
         """
         ws = tmp_path / "workspace"
         ws.mkdir()
@@ -830,10 +831,10 @@ class TestBlockedStatusTriage:
 
         verdict = adjudicate("t_block", 1, bundle, decl)
 
-        # Adjudicate sets status="error" when result_status=="blocked" (§5.4, M14)
-        # finalize() then routes to triage
+        # Adjudicate sets status="unmet" when result_status=="blocked" (§5.4, §7 v2)
+        # finalize() then routes via _record_task_failure(error=summary)
         assert verdict.result_status == "blocked"
-        assert verdict.status == "error"  # routes to triage in finalize
+        assert verdict.status == "unmet"  # same path as unmet, not error/triage
 
 
 # ═══════════════════════════════════════════════════════════════

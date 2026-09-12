@@ -75,12 +75,20 @@ def reap_task_dir(task_id: str, run_id: int, *, retain_days: int = 7) -> None:
 
 
 def reap(task_id: str, run_id: int, *, retain_days: int = 7) -> None:
-    """Full cleanup: container → credentials → old task dirs (§8).
+    """Full cleanup: write adjudicated marker → container → credentials → old task dirs (§8).
 
     Order matters: container must be removed AFTER collect+adjudicate+archive
-    have finished (I8: adjudication before reaping).
+    have finished (I8: adjudication before reaping). The adjudicated marker
+    is written first to release the sentinel.
     """
     t0 = time.time()
+    # Write adjudicated marker so the sentinel can exit (I8)
+    tdir = task_dir(task_id, run_id)
+    marker = tdir / "adjudicated"
+    try:
+        marker.touch()
+    except OSError:
+        pass
     reap_container(task_id, run_id)
     reap_credentials(task_id, run_id)
     reap_task_dir(task_id, run_id, retain_days=retain_days)
@@ -153,3 +161,63 @@ def list_running_containers() -> list[dict]:
                 "run_id": run_id,
             })
     return containers
+
+
+def reap_orphans() -> None:
+    """Kill containers whose sentinel PID is dead (§3 reap_orphans).
+
+    For each running worker container, check if the corresponding sentinel
+    PID is still alive. If not, docker kill the container.
+    """
+    import os
+    from talos.executor.constants import parse_container_name, task_dir
+
+    containers = list_running_containers()
+    for ctr in containers:
+        task_id = ctr["task_id"]
+        run_id = ctr["run_id"]
+
+        # Check if sentinel PID is alive by looking at the task's worker_pid
+        # in the kanban DB. If the kernel already cleaned the PID (set to None),
+        # the sentinel is dead and we should kill the container.
+        try:
+            from hermes_cli import kanban_db_connect as kbc
+            with kbc.connect() as conn:
+                row = conn.execute(
+                    "SELECT worker_pid FROM tasks WHERE id = ?",
+                    (task_id,),
+                ).fetchone()
+                if row is None:
+                    # Task not found — kill orphan container
+                    _kill_container(ctr["name"], task_id, run_id, reason="task_not_found")
+                    continue
+
+                worker_pid = row["worker_pid"] if "worker_pid" in row.keys() else None
+                if worker_pid is None:
+                    # Sentinel PID cleared by kernel — orphan
+                    _kill_container(ctr["name"], task_id, run_id, reason="sentinel_dead")
+                    continue
+
+                # Check if PID is alive
+                try:
+                    os.kill(int(worker_pid), 0)
+                except (ProcessLookupError, ValueError, PermissionError):
+                    # PID is dead — orphan
+                    _kill_container(ctr["name"], task_id, run_id, reason="sentinel_dead")
+        except Exception as e:
+            log_event("error", task_id=task_id, run_id=run_id,
+                      msg=f"reap_orphans check failed: {e}")
+
+
+def _kill_container(cname: str, task_id: str, run_id: int, reason: str) -> None:
+    """Kill a container and log."""
+    try:
+        subprocess.run(
+            ["docker", "kill", cname],
+            capture_output=True, text=True, timeout=10,
+        )
+        log_event("cleaned", task_id=task_id, run_id=run_id,
+                  extra={"action": "reap_orphan", "container": cname, "reason": reason})
+    except Exception as e:
+        log_event("error", task_id=task_id, run_id=run_id,
+                  msg=f"reap_orphan kill failed: {e}")

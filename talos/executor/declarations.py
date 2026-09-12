@@ -47,6 +47,13 @@ import yaml
 from talos.executor import constants
 
 
+class DeclarationError(Exception):
+    """Raised when a skill declaration (frontmatter) is malformed (§6, M12).
+
+    This triggers verdict=error → _record_task_failure(error="校验器故障：…").
+    """
+
+
 @dataclass
 class ArtifactSpec:
     path: str
@@ -112,20 +119,26 @@ def _load_skill_frontmatter(skill_name: str) -> dict:
     for path in candidates:
         if path.exists():
             text = path.read_text(encoding="utf-8")
-            return _parse_frontmatter(text)
+            return _parse_frontmatter(text, skill_name)
     return {}
 
 
-def _parse_frontmatter(text: str) -> dict:
-    """Extract and parse YAML frontmatter from markdown."""
+def _parse_frontmatter(text: str, skill_name: str = "") -> dict:
+    """Extract and parse YAML frontmatter from markdown.
+
+    Raises ``DeclarationError`` if the frontmatter exists but is invalid YAML
+    or not a dict (§6, M12).
+    """
     m = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
     if not m:
         return {}
     try:
         data = yaml.safe_load(m.group(1))
-        return data if isinstance(data, dict) else {}
-    except yaml.YAMLError:
-        return {}
+    except yaml.YAMLError as e:
+        raise DeclarationError(f"skill {skill_name}: frontmatter YAML 非法: {e}")
+    if not isinstance(data, dict):
+        raise DeclarationError(f"skill {skill_name}: frontmatter 不是 YAML 对象")
+    return data
 
 
 def _substitute(template: str, task: Any) -> str:
@@ -199,8 +212,10 @@ def load_declarations(skills: Optional[list[str]], task: Any = None) -> Declarat
                     path = _substitute(str(art.get("path", "")), task)
                     try:
                         min_b = int(art.get("min_bytes", 0))
-                    except (ValueError, TypeError):
-                        min_b = 0  # malformed min_bytes — treat as 0 (will be caught by adjudicator as defect)
+                    except (ValueError, TypeError) as e:
+                        raise DeclarationError(
+                            f"skill {skill_name}: artifact min_bytes 非法: {art.get('min_bytes')!r}"
+                        ) from e
                     all_artifacts.append(ArtifactSpec(path=path, min_bytes=min_b))
 
             # git

@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from talos.executor.constants import container_name, log_event, task_dir
+from talos.executor.constants import CONTAINER_HH, container_name, log_event, task_dir
 
 
 @dataclass
@@ -131,6 +131,17 @@ def collect(task_id: str, run_id: int) -> CollectedBundle:
         _docker_cp(cname, "/work/", work_copy)
     if work_copy.exists():
         bundle.workspace_path = work_copy
+
+    # 4. Copy state.db from container HERMES_HOME (§8, M21)
+    #    This is the evidence ledger used by check_verification and archived.
+    state_db_dst = tdir / "state.db"
+    if not state_db_dst.exists():
+        _docker_cp(cname, f"{CONTAINER_HH}/state.db", state_db_dst)
+
+    # 5. Copy trace JSONL from container HERMES_HOME/trace/ (§8, M21)
+    trace_dst = tdir / "trace"
+    if not trace_dst.exists():
+        _docker_cp(cname, f"{CONTAINER_HH}/trace/", trace_dst)
 
     log_event("collected", task_id=task_id, run_id=run_id,
               duration_ms=(time.time() - t0) * 1000,

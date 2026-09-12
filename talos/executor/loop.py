@@ -29,7 +29,7 @@ from talos.executor.constants import (
 )
 from talos.executor.declarations import load_declarations
 from talos.executor.finalize import finalize
-from talos.executor.reap import list_exited_containers, list_running_containers, reap
+from talos.executor.reap import list_exited_containers, list_running_containers, reap, reap_orphans
 from talos.executor.spawn import make_spawn_fn
 
 
@@ -141,8 +141,27 @@ def _adjudicate_exited(conn: Any) -> None:
         try:
             task = kb.get_task(conn, task_id)
             decl = load_declarations(task.skills if task else None, task)
-        except Exception:
-            decl = load_declarations(None)
+        except Exception as e:
+            # DeclarationError or other load failure → error verdict (§6, M12)
+            from talos.executor.adjudicate import Verdict
+            from talos.executor.declarations import DeclarationError
+            log_event("error", task_id=task_id, run_id=run_id,
+                      msg=f"declaration load failed: {e}")
+            verdict = Verdict(
+                status="error",
+                defects=[f"校验器故障: {e}"],
+            )
+            try:
+                finalize(conn, task_id, run_id, verdict)
+            except Exception as fe:
+                log_event("error", task_id=task_id, run_id=run_id,
+                          msg=f"finalize (decl error) failed: {fe}")
+            try:
+                archive(task_id, run_id, bundle := collect(task_id, run_id), verdict)
+            except Exception:
+                pass
+            reap(task_id, run_id)
+            continue
 
         # Adjudicate
         try:
@@ -209,7 +228,10 @@ def tick(conn: Any, spawn_fn: Optional[Any] = None) -> None:
     # 2. Heartbeat live containers
     _heartbeat_live_containers(conn)
 
-    # 3. Dispatch new ready tasks
+    # 3. Reap orphan containers (sentinel dead but container still running)
+    reap_orphans()
+
+    # 4. Dispatch new ready tasks
     _dispatch(conn, spawn_fn)
 
     log_event("heartbeat", duration_ms=(time.time() - t0) * 1000,

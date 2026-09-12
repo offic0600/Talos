@@ -599,8 +599,11 @@ def adjudicate(
         status = "error"
         defects.append(f"校验器故障: {checker_error}")
     elif result_status == "blocked":
-        # result.json explicitly says blocked → triage (§5.4)
-        status = "error"  # Will route to triage in finalize
+        # result.json says blocked → same path as unmet (§5.4, §7)
+        # _record_task_failure(error=summary), NOT block_task
+        status = "unmet"
+        if not problems:
+            problems.append(f"worker 报告能力不足 (status=blocked): {summary[:300]}")
     elif problems:
         status = "unmet"
     elif defects:
