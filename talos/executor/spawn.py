@@ -129,6 +129,22 @@ def _build_env(task: Any, decl: Declaration, creds: dict, repo_url: str) -> list
     # Container HERMES_HOME
     env.append(f"HERMES_HOME={CONTAINER_HH}")
 
+    # LLM API keys — the worker needs an inference provider to function.
+    # Pass through keys from the executor's environment (not from .env file,
+    # to avoid leaking other secrets). Only keys explicitly listed here.
+    _api_key_passsthrough = (
+        "GOOGLE_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENROUTER_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "API_SERVER_KEY",
+    )
+    for key in _api_key_passsthrough:
+        val = os.environ.get(key)
+        if val:
+            env.append(f"{key}={val}")
+
     return env
 
 
@@ -197,6 +213,9 @@ def _build_docker_command(
         "--memory", f"{decl.resources.memory_mb}m",
         "--cpus", str(decl.resources.cpus),
         "--restart", "no",
+        # Override entrypoint: hermes-worker image has ENTRYPOINT ["hermes"],
+        # so we must use sh as entrypoint to make `$(cat ...)` work.
+        "--entrypoint", "sh",
     ]
 
     for e in env:
