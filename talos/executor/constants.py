@@ -55,7 +55,10 @@ CONTAINER_HH = "/tmp/hermes-worker-home"
 TICK_INTERVAL = float(os.environ.get("TALOS_TICK_INTERVAL", "5"))
 
 #: GitLab pipeline polling interval (seconds).
-PIPELINE_POLL_INTERVAL = 15
+PIPELINE_POLL_INTERVAL = 5
+
+#: How long to wait for a pipeline to appear after .gitlab-ci.yml exists (seconds).
+PIPELINE_APPEAR_WINDOW = 60
 
 #: Default verification timeout (seconds).
 DEFAULT_VERIFICATION_TIMEOUT = 900

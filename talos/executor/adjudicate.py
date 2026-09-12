@@ -36,6 +36,7 @@ from talos.executor.constants import (
     GITLAB_ADMIN_TOKEN,
     GITLAB_URL,
     PIPELINE_POLL_INTERVAL,
+    PIPELINE_APPEAR_WINDOW,
     log_event,
 )
 from talos.executor.declarations import Declaration
@@ -253,7 +254,17 @@ def check_deliverables(decl: Declaration, bundle: CollectedBundle) -> tuple[list
 # ── CI verification ──────────────────────────────────────────────────────
 
 def _check_ci(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], list[str]]:
-    """Poll GitLab pipelines API for the branch/sha (§6)."""
+    """Poll GitLab pipelines API for the branch/sha (§6).
+
+    Decision flow:
+      1. GET /projects/:id/repository/files/.gitlab-ci.yml?ref=<branch>
+         - 404 → defect「无流水线定义」, return immediately
+         - 200 → proceed to step 2
+      2. Wait up to PIPELINE_APPEAR_WINDOW (60s) for a pipeline to appear
+         (poll every PIPELINE_POLL_INTERVAL=5s)
+         - No pipeline in 60s → defect「流水线未触发」, return
+      3. Once pipeline exists, poll until terminal state or timeout_s
+    """
     problems: list[str] = []
     defects: list[str] = []
 
@@ -270,34 +281,47 @@ def _check_ci(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], li
         defects.append(f"无法从 URL 解析项目: {repo_url}")
         return problems, defects
 
-    # First poll: if no pipelines exist AND the branch itself doesn't exist
-    # on the remote, return immediately as a defect (no CI configured for
-    # a non-existent branch). This prevents a 900s hang when the worker
-    # never pushed the branch.
+    # Step 1: check if .gitlab-ci.yml exists on this branch
+    ci_file_ok = _gitlab_ci_file_exists(project_id, branch)
+    if ci_file_ok is False:
+        defects.append(f"无流水线定义: branch={branch} 无 .gitlab-ci.yml")
+        return problems, defects
+    if ci_file_ok is None:
+        # API error — can't determine, treat as defect
+        defects.append(f"GitLab API 不可达: 无法检查 .gitlab-ci.yml")
+        return problems, defects
+
+    # Step 2: wait up to PIPELINE_APPEAR_WINDOW for a pipeline to appear
+    appear_deadline = time.time() + PIPELINE_APPEAR_WINDOW
+    pipeline_found = False
+    while time.time() < appear_deadline:
+        pipelines = _gitlab_pipelines(project_id, branch, sha)
+        if pipelines:
+            pipeline_found = True
+            break
+        time.sleep(PIPELINE_POLL_INTERVAL)
+
+    if not pipeline_found:
+        defects.append(
+            f"流水线未触发: {PIPELINE_APPEAR_WINDOW}s 内无流水线 branch={branch}"
+        )
+        return problems, defects
+
+    # Step 3: poll until terminal state or timeout_s
     timeout = decl.verification.timeout_s
     deadline = time.time() + timeout
-    empty_polls = 0
-    MAX_EMPTY_POLLS = 3  # After 3 consecutive empty results (~45s), give up
 
     while time.time() < deadline:
         pipelines = _gitlab_pipelines(project_id, branch, sha)
         if pipelines is None:
-            # API error — could be transient
             defects.append("GitLab pipelines API 不可达")
             return problems, defects
 
         if not pipelines:
-            # No pipeline yet — poll a few times, then return as defect
-            empty_polls += 1
-            if empty_polls >= MAX_EMPTY_POLLS:
-                defects.append(
-                    f"无流水线定义: branch={branch} ({empty_polls} 次轮询均为空)"
-                )
-                return problems, defects
-            time.sleep(PIPELINE_POLL_INTERVAL)
-            continue
+            # Pipeline disappeared — treat as defect
+            defects.append(f"流水线消失: branch={branch}")
+            return problems, defects
 
-        # Check the most recent pipeline
         pipe = pipelines[0]
         status = pipe.get("status", "")
         if status in ("success",):
@@ -305,15 +329,9 @@ def _check_ci(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], li
         elif status in ("failed", "canceled"):
             problems.append(f"流水线 {status}: #{pipe.get('id')} branch={branch}")
             return problems, defects
-        elif status in ("running", "pending", "created", "waiting_for_resource", "preparing"):
-            time.sleep(PIPELINE_POLL_INTERVAL)
-            continue
-        else:
-            # Unknown status — keep polling
-            time.sleep(PIPELINE_POLL_INTERVAL)
-            continue
+        # running / pending / created / etc — keep polling
+        time.sleep(PIPELINE_POLL_INTERVAL)
 
-    # Timed out
     defects.append(f"流水线超时: {timeout}s 内未出终态 branch={branch}")
     return problems, defects
 
@@ -490,6 +508,33 @@ def _gitlab_pipelines(project_id: str, branch: str, sha: Optional[str] = None) -
             return json.loads(resp.read())
     except HTTPError:
         return None
+    except Exception:
+        return None
+
+
+def _gitlab_ci_file_exists(project_id: str, branch: str) -> Optional[bool]:
+    """Check if .gitlab-ci.yml exists on the given branch.
+
+    Returns True if the file exists, False if 404, None on API error.
+    """
+    if not GITLAB_ADMIN_TOKEN:
+        return None
+    # URL-encode the file path: .gitlab-ci.yml → .gitlab-ci.yml (already safe)
+    import urllib.parse
+    file_path = urllib.parse.quote(".gitlab-ci.yml", safe="")
+    url = (
+        f"{GITLAB_URL}/api/v4/projects/{project_id}"
+        f"/repository/files/{file_path}?ref={urllib.parse.quote(branch, safe='')}"
+    )
+    req = Request(url)
+    req.add_header("PRIVATE-TOKEN", GITLAB_ADMIN_TOKEN)
+    try:
+        with urlopen(req, timeout=15) as resp:
+            return True  # 200 — file exists
+    except HTTPError as e:
+        if e.code == 404:
+            return False
+        return None  # other HTTP error
     except Exception:
         return None
 

@@ -834,3 +834,99 @@ class TestBlockedStatusTriage:
         # finalize() then routes to triage
         assert verdict.result_status == "blocked"
         assert verdict.status == "error"  # routes to triage in finalize
+
+
+# ═══════════════════════════════════════════════════════════════
+# 4. _check_ci: .gitlab-ci.yml existence + pipeline appear window
+# ═══════════════════════════════════════════════════════════════
+
+
+class TestCheckCiFileDetection:
+    """_check_ci should check .gitlab-ci.yml existence before polling pipelines."""
+
+    def test_no_gitlab_ci_yml_returns_defect_within_1s(self, tmp_path):
+        """Branch has no .gitlab-ci.yml -> defect, returns in <1s."""
+        import time as _time
+        from talos.executor.adjudicate import _check_ci
+
+        bundle = make_bundle(
+            tmp_path,
+            result_json={
+                "schema": 1,
+                "status": "done",
+                "summary": "Done",
+                "artifacts": [
+                    {
+                        "kind": "git_branch",
+                        "repo": "https://gitlab.example.com/test/repo.git",
+                        "branch": "talos/no-ci",
+                        "sha": "abc123",
+                    }
+                ],
+            },
+        )
+        decl = make_decl(
+            git=GitSpec(branch="talos/no-ci", require_push=True),
+            verification=VerificationSpec(required=True, source="ci", timeout_s=900),
+        )
+
+        with patch("talos.executor.adjudicate._gitlab_ci_file_exists", return_value=False), \
+             patch("talos.executor.adjudicate._gitlab_pipelines") as mock_pipelines, \
+             patch("talos.executor.adjudicate._ls_remote", return_value="abc123"), \
+             patch("talos.executor.adjudicate._repo_reachable", return_value=True):
+            t0 = _time.time()
+            problems, defects = _check_ci(decl, bundle)
+            elapsed = _time.time() - t0
+
+        assert len(defects) == 1
+        assert "无流水线定义" in defects[0]
+        assert elapsed < 1.0, f"Expected <1s, got {elapsed:.2f}s"
+        mock_pipelines.assert_not_called()
+
+
+class TestCheckCiPipelineAppearWindow:
+    """Pipeline appears on 3rd poll -> should wait and then process normally."""
+
+    def test_pipeline_appears_on_3rd_poll(self, tmp_path):
+        """Pipeline appears on 3rd query -> function waits and processes terminal state."""
+        from talos.executor.adjudicate import _check_ci
+
+        bundle = make_bundle(
+            tmp_path,
+            result_json={
+                "schema": 1,
+                "status": "done",
+                "summary": "Done",
+                "artifacts": [
+                    {
+                        "kind": "git_branch",
+                        "repo": "https://gitlab.example.com/test/repo.git",
+                        "branch": "talos/has-ci",
+                        "sha": "abc123",
+                    }
+                ],
+            },
+        )
+        decl = make_decl(
+            git=GitSpec(branch="talos/has-ci", require_push=True),
+            verification=VerificationSpec(required=True, source="ci", timeout_s=300),
+        )
+
+        pipeline_success = [{"id": 42, "status": "success"}]
+        call_count = {"n": 0}
+
+        def mock_pipelines(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] < 3:
+                return []
+            return pipeline_success
+
+        with patch("talos.executor.adjudicate._gitlab_ci_file_exists", return_value=True), \
+             patch("talos.executor.adjudicate._gitlab_pipelines", side_effect=mock_pipelines), \
+             patch("talos.executor.adjudicate.time.sleep") as mock_sleep:
+            problems, defects = _check_ci(decl, bundle)
+
+        assert len(defects) == 0, f"Expected no defects, got {defects}"
+        assert len(problems) == 0, f"Expected no problems, got {problems}"
+        assert call_count["n"] >= 3, f"Expected >=3 polls, got {call_count['n']}"
+        assert mock_sleep.call_count >= 2, f"Expected >=2 sleeps, got {mock_sleep.call_count}"
