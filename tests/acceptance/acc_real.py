@@ -744,9 +744,10 @@ def main():
         tests_to_run = []
         for part in args.batch.split(","):
             if "-" in part:
-                prefix = part.split("-")[0][:-1]  # e.g. "M1" from "M1-M5"
-                start = int(part.split("-")[0][-1])
-                end = int(part.split("-")[1])
+                start_part, end_part = part.split("-", 1)
+                prefix = start_part.rstrip("0123456789")
+                start = int(start_part[len(prefix):])
+                end = int(end_part[len(prefix):] if end_part.startswith(prefix) else end_part)
                 for i in range(start, end + 1):
                     tests_to_run.append(f"{prefix}{i}")
             else:
