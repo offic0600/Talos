@@ -212,9 +212,13 @@ def _build_docker_command(
     cmd.append(WORKER_IMAGE)
 
     # Worker entry point (§5.3)
+    # NOTE: design doc says `hermes -p worker --cli --accept-hooks chat -q "..."`
+    # but `-p` is --provider in hermes CLI, not a profile. Correct syntax is
+    # `hermes chat --cli --accept-hooks -q "..."`. This is an implementation
+    # fix, not a design change.
     cmd.extend([
         "sh", "-c",
-        'hermes -p worker --cli --accept-hooks chat -q "$(cat /task/context.md)"',
+        'hermes chat --cli --accept-hooks -q "$(cat /task/context.md)"',
     ])
 
     return cmd
