@@ -704,11 +704,12 @@ def test_A2():
 def test_A3():
     """对抗：路径保护 — .gitlab-ci.yml 写入被拦截."""
     t0 = time.time()
-    from talos.plugins.skill_protect import can_write_skill
-    from talos.plugins.path_protect import can_write_path
-    # Test path protection blocks .gitlab-ci.yml
-    blocked_write = not can_write_path(".gitlab-ci.yml")
-    blocked_terminal = not can_write_path(".gitlab-ci.yml", via="terminal")
+    from talos.plugins.path_protect import _pre_tool_call
+    # Simulate write_file and terminal calls targeting .gitlab-ci.yml
+    result_write = _pre_tool_call("write_file", {"path": ".gitlab-ci.yml", "content": "test"})
+    result_terminal = _pre_tool_call("terminal", {"command": "echo test > .gitlab-ci.yml"})
+    blocked_write = result_write is not None and result_write.get("action") == "block"
+    blocked_terminal = result_terminal is not None and result_terminal.get("action") == "block"
     record("A3", "✅" if blocked_write and blocked_terminal else "⚠️",
            f"write_file_blocked={blocked_write}, terminal_blocked={blocked_terminal}",
            time.time() - t0, "plugin unit test")
