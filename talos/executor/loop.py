@@ -269,11 +269,19 @@ def run_executor(
     print(f"[talos-executor] EXECUTOR_LOG={EXECUTOR_LOG}")
     print(f"[talos-executor] tick interval={interval}s")
 
-    # Cleanup orphan tokens at startup (§8, M19)
+    # Cleanup orphan tokens at startup (§8, M19) — best-effort, non-blocking.
+    # If GitLab is unreachable, the executor still starts and processes local
+    # exited containers. cleanup is retried every tick until it succeeds once.
     from talos.executor.credentials import cleanup_orphan_tokens
-    orphan_count = cleanup_orphan_tokens()
-    if orphan_count:
-        print(f"[talos-executor] revoked {orphan_count} orphan token(s)")
+    _orphan_cleanup_done = False
+    try:
+        orphan_count = cleanup_orphan_tokens()
+        _orphan_cleanup_done = True
+        if orphan_count:
+            print(f"[talos-executor] revoked {orphan_count} orphan token(s)")
+    except Exception as e:
+        log_event("error", msg=f"orphan token cleanup failed at startup: {e}")
+        print(f"[talos-executor] orphan cleanup deferred: {e}")
 
     from hermes_cli import kanban_db_connect as kbc
 
@@ -289,6 +297,16 @@ def run_executor(
             import traceback
             traceback.print_exc()
             log_event("error", msg=f"tick exception: {e}")
+
+        # Retry orphan token cleanup if startup failed (§8, M19)
+        if not _orphan_cleanup_done:
+            try:
+                orphan_count = cleanup_orphan_tokens()
+                _orphan_cleanup_done = True
+                if orphan_count:
+                    print(f"[talos-executor] revoked {orphan_count} orphan token(s) (deferred)")
+            except Exception as e:
+                log_event("error", msg=f"orphan token cleanup retry failed: {e}")
 
         if on_tick is not None:
             with contextlib.suppress(Exception):
