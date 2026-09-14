@@ -25,6 +25,7 @@ from typing import Any, Optional
 from talos.executor.adjudicate import Verdict
 from talos.executor.collect import CollectedBundle
 from talos.executor.constants import archive_dir, log_event, task_dir
+from talos.executor.redact import redact_env
 
 
 def archive(
@@ -66,10 +67,10 @@ def archive(
     if state_db_src:
         shutil.copy2(state_db_src, adir / "state.db")
 
-    # 3. inspect.json
+    # 3. inspect.json — redact sensitive env vars before writing (v2.1 §9 I6)
     if bundle.inspect:
         (adir / "inspect.json").write_text(
-            json.dumps(bundle.inspect, indent=2, ensure_ascii=False, default=str),
+            json.dumps(redact_env(bundle.inspect), indent=2, ensure_ascii=False, default=str),
             encoding="utf-8",
         )
 

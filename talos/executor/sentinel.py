@@ -6,7 +6,8 @@ the worker PID. It:
 1. Starts the docker container (``docker run -d``)
 2. Waits for the container to exit (``docker wait``)
 3. Waits for the ``<tdir>/adjudicated`` marker file (set by the executor after
-   finalize completes), with a timeout of ADJ_TIMEOUT
+   finalize completes), with a timeout of ``adj_timeout`` (computed as
+   60 + verification_timeout_s + 60, v2.1 FIX #4)
 4. Exits 0
 
 On SIGTERM (from kernel ``enforce_max_runtime``): kills the container via
@@ -35,11 +36,48 @@ from talos.executor.constants import (
     task_dir,
 )
 
-#: How long the sentinel waits for adjudication to complete after container exit.
-ADJ_TIMEOUT = 300  # 5 minutes — must be > adjudicate+finalize+archive worst case
+#: Default adjudication timeout if no verification_timeout_s is provided.
+#: 实例：哨兵寿命由裁决决定，不由常数决定（v2.1 FIX #4）；
+#: 实际值 = 60 + verification_timeout_s + 60，由调用方传入。
+DEFAULT_ADJ_TIMEOUT = 300
+
+#: How often (seconds) to check executor liveness during marker wait.
+EXECUTOR_LIVENESS_CHECK_INTERVAL = 30
+
+#: Max age (seconds) of executor heartbeat before sentinel considers it dead.
+EXECUTOR_HEARTBEAT_MAX_AGE = 60
 
 
-def run_sentinel(task_id: str, run_id: int, tdir: Path, docker_cmd: list[str]) -> int:
+def _executor_is_alive() -> bool:
+    """Check if the executor is alive by reading executor.jsonl last heartbeat.
+
+    实例：哨兵等待裁决标记期间每 30 秒检查执行器心跳，
+    若最近一次心跳距今超过 60 秒则判定执行器已死，哨兵退出让内核回收
+    （v2.1 FIX #4）。
+    """
+    import json
+    from talos.executor.constants import EXECUTOR_LOG
+
+    if not EXECUTOR_LOG.exists():
+        return False
+    try:
+        # Read the last line of executor.jsonl
+        with open(EXECUTOR_LOG, "r", encoding="utf-8") as fh:
+            lines = fh.readlines()
+        if not lines:
+            return False
+        last = json.loads(lines[-1])
+        ts = last.get("ts", 0)
+        age = time.time() - ts
+        return age <= EXECUTOR_HEARTBEAT_MAX_AGE
+    except Exception as e:
+        # 实例：禁止空吞异常（v2.1 FIX #3）
+        log_event("error", msg=f"sentinel: executor liveness check failed: {e}")
+        return False
+
+
+def run_sentinel(task_id: str, run_id: int, tdir: Path, docker_cmd: list[str],
+                 adj_timeout: int = DEFAULT_ADJ_TIMEOUT) -> int:
     """Run the sentinel process for one task.
 
     Parameters
@@ -50,6 +88,9 @@ def run_sentinel(task_id: str, run_id: int, tdir: Path, docker_cmd: list[str]) -
         Per-run task directory (``~/.hermes/talos/tasks/<task_id>/<run_id>/``).
     docker_cmd : list[str]
         The full ``docker run -d --name ...`` command to start the container.
+    adj_timeout : int
+        How long to wait for the adjudication marker after container exit.
+        实例：由调用方计算 60 + verification_timeout_s + 60 传入（v2.1 FIX #4）。
 
     Returns
     ----------
@@ -66,8 +107,10 @@ def run_sentinel(task_id: str, run_id: int, tdir: Path, docker_cmd: list[str]) -
                 ["docker", "kill", cname],
                 capture_output=True, text=True, timeout=10,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            # 实例：禁止空吞异常（v2.1 FIX #3）
+            log_event("error", task_id=task_id, run_id=run_id,
+                      msg=f"sentinel: docker kill on SIGTERM failed: {e}")
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _on_sigterm)
@@ -97,29 +140,46 @@ def run_sentinel(task_id: str, run_id: int, tdir: Path, docker_cmd: list[str]) -
         )
     except subprocess.TimeoutExpired:
         # Container ran too long — kernel should have killed the sentinel by now
-        pass
+        # 实例：禁止空吞异常（v2.1 FIX #3）
+        log_event("error", task_id=task_id, run_id=run_id,
+                  msg="sentinel: docker wait timed out (3600s)")
 
     log_event("sentinel_container_exited", task_id=task_id, run_id=run_id)
 
     # 3. Wait for adjudication marker
-    deadline = time.time() + ADJ_TIMEOUT
+    # 实例：哨兵寿命 = adj_timeout（由调用方计算 60 + verification_timeout_s + 60）；
+    # 等待期间每 30 秒检查执行器心跳，若超过 60 秒无心跳则退出让内核回收
+    # （v2.1 FIX #4）。
+    deadline = time.time() + adj_timeout
+    last_liveness_check = time.time()
     while time.time() < deadline:
         if adjudicated_marker.exists():
             log_event("sentinel_adjudicated", task_id=task_id, run_id=run_id)
             return 0
+        # 实例：每 30 秒检查执行器存活（v2.1 FIX #4）
+        if time.time() - last_liveness_check >= EXECUTOR_LIVENESS_CHECK_INTERVAL:
+            last_liveness_check = time.time()
+            if not _executor_is_alive():
+                log_event("error", task_id=task_id, run_id=run_id,
+                          msg="sentinel: executor heartbeat stale >60s, exiting")
+                return 1
         time.sleep(1)
 
     # Timeout — sentinel exits without adjudication
     log_event("error", task_id=task_id, run_id=run_id,
-              msg=f"sentinel: adjudication marker not set within {ADJ_TIMEOUT}s")
+              msg=f"sentinel: adjudication marker not set within {adj_timeout}s")
     return 1
 
 
-def start_sentinel(task_id: str, run_id: int, tdir: Path, docker_cmd: list[str]) -> int:
+def start_sentinel(task_id: str, run_id: int, tdir: Path, docker_cmd: list[str],
+                   adj_timeout: int = DEFAULT_ADJ_TIMEOUT) -> int:
     """Fork a sentinel process and return its PID.
 
     The sentinel is a child of the executor process. If the executor crashes,
     the sentinel is reparented to init and continues running.
+
+    实例：adj_timeout 由 spawn.py 计算 60 + verification_timeout_s + 60 传入
+    （v2.1 FIX #4）。
     """
     pid = os.fork()
     if pid == 0:
@@ -127,7 +187,8 @@ def start_sentinel(task_id: str, run_id: int, tdir: Path, docker_cmd: list[str])
         # Decouple from parent's process group so parent signals don't affect us
         os.setsid()
         # Run sentinel (this blocks until container exits + adjudication)
-        exit_code = run_sentinel(task_id, run_id, tdir, docker_cmd)
+        exit_code = run_sentinel(task_id, run_id, tdir, docker_cmd,
+                                 adj_timeout=adj_timeout)
         os._exit(exit_code)
 
     # Parent — return sentinel PID

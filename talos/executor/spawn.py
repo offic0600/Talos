@@ -33,20 +33,44 @@ from talos.executor.declarations import Declaration, _extract_repo, load_declara
 from talos.executor.sentinel import start_sentinel
 
 
-def _build_context_md(conn: Any, task: Any, decl: Declaration) -> str:
+def _build_context_md(task: Any, decl: Declaration) -> str:
     """Build the context.md file (§5.3).
 
-    Order: ① ``hermes kanban context`` output ② declaration summary
-    ③ closing requirements (fixed text).
+    Order: ⓪ 绑定参数段 (v2.1, I11) ① ``hermes kanban context`` output
+    ② declaration summary ③ closing requirements (fixed text).
+
+    实例：本函数自行通过 ``kanban_db_connect`` 开连接，不接收外部 conn，
+    避免闭包持有已关闭的连接（v2.1 FIX #3）。
     """
     parts: list[str] = []
 
+    # ⓪ 绑定参数段 (v2.1, I11): injected binding params for the 实例 to read,
+    #   not discover from the kanban context body.
+    repo_url = _extract_repo(task)
+    branch = getattr(task, "branch_name", None) or decl.git.branch or ""
+    tenant = getattr(task, "tenant", None) or ""
+    deliverables_str = "; ".join(
+        f"{dl.kind}({dl.repo or dl.path}→{dl.branch})"
+        for dl in decl.deliverables
+    ) if decl.deliverables else "—"
+    parts.append("## 绑定参数\n")
+    parts.append(f"- repo: {repo_url or '—'}")
+    parts.append(f"- branch: {branch or '—'}")
+    parts.append(f"- tenant: {tenant or '—'}")
+    parts.append(f"- deliverables: {deliverables_str}")
+    parts.append(f"- verification.source: {decl.verification.source}")
+
     # ① Kanban context (from the kernel's build_worker_context)
     try:
+        from hermes_cli import kanban_db_connect as kbc
         from hermes_cli.kanban_db import build_worker_context
-        parts.append(build_worker_context(conn, task.id))
-    except Exception:
-        # Fallback: minimal header
+        with kbc.connect() as conn:
+            parts.append(build_worker_context(conn, task.id))
+    except Exception as e:
+        # 实例：上下文生成失败必须记 error，不得静默退化（v2.1 FIX #3）
+        log_event("error", task_id=getattr(task, "id", None),
+                  run_id=getattr(task, "current_run_id", None),
+                  msg=f"build_worker_context failed: {e}")
         parts.append(f"# Kanban task {task.id}: {task.title}")
         if task.body:
             parts.append(f"\n## Body\n{task.body}")
@@ -74,9 +98,11 @@ def _build_context_md(conn: Any, task: Any, decl: Declaration) -> str:
     parts.append(
         "完成后必须做两件事："
         "(1) 把本任务的全部改动提交并推到分支 "
-        f"`{decl.git.branch or 'talos/' + task.id}`；"
+        f"`{decl.git.branch or 'talos/' + task.id}`"
+        "（`git push origin HEAD:$TALOS_BRANCH`）；"
         "(2) 在 `/task/out/result.json` 写入结果（格式见下）。"
         "不写结果文件视为失败。不要尝试操作看板，你没有看板工具。"
+        "仓库、分支等绑定参数以本文件「绑定参数」段为准，不要自行选择或更改。"
     )
     parts.append(
         "\n```json\n"
@@ -114,11 +140,14 @@ def _build_env(task: Any, decl: Declaration, creds: dict, repo_url: str) -> list
     env.append("HERMES_RESOURCE_SOURCE=talos-executor")
 
     # Git config (§5.2): credential helper + author identity
-    env.append("GIT_CONFIG_COUNT=2")
+    # 实例：注入 user.email，避免提交无作者邮箱（v2.1 FIX #6）
+    env.append("GIT_CONFIG_COUNT=3")
     env.append("GIT_CONFIG_KEY_0=credential.helper")
     env.append("GIT_CONFIG_VALUE_0=store --file=/task/creds/git-credentials")
     env.append("GIT_CONFIG_KEY_1=user.name")
     env.append(f"GIT_CONFIG_VALUE_1=talos[{task.id}]")
+    env.append("GIT_CONFIG_KEY_2=user.email")
+    env.append("GIT_CONFIG_VALUE_2=talos-worker@haier.net")
 
     # Repo / branch for the worker
     if repo_url:
@@ -246,7 +275,7 @@ def _build_docker_command(
     return cmd
 
 
-def make_spawn_fn(conn: Any):
+def make_spawn_fn():
     """Create a spawn_fn closure for ``dispatch_once``.
 
     The returned callable has signature ``(task, workspace) -> Optional[int]``
@@ -256,6 +285,9 @@ def make_spawn_fn(conn: Any):
     ``docker inspect --format '{{.State.Pid}}'``. The kernel uses this PID
     for liveness checks (``os.kill(pid, 0)``) and signal delivery
     (``os.kill(pid, SIGTERM/SIGKILL)``).
+
+    实例：闭包不接收 conn 参数，spawn_fn 内部自行通过 ``kanban_db_connect``
+    开连接（v2.1 FIX #3）。
     """
 
     def spawn_fn(task: Any, workspace: str, board: Optional[str] = None) -> Optional[int]:
@@ -276,14 +308,54 @@ def make_spawn_fn(conn: Any):
         # Load declarations (I1: type-agnostic, driven by skill frontmatter)
         decl = load_declarations(task.skills, task)
 
-        # Determine repo URL
+        # Determine repo URL (I11: binding param from task body first line 'repo:')
         repo_url = _extract_repo(task)
+
+        # ── I11 binding param check (v2.1): verify all declared `requires`
+        #    are present before starting the 实例. Missing binding → defect,
+        #    do NOT start container, return None, degrade-complete the task.
+        branch = getattr(task, "branch_name", None) or decl.git.branch or ""
+        tenant = getattr(task, "tenant", None) or ""
+        bindings = {
+            "repo": repo_url,
+            "branch": branch,
+            "tenant": tenant,
+        }
+        missing = [name for name in decl.requires if not bindings.get(name)]
+        if missing:
+            log_event("error", task_id=task.id, run_id=run_id,
+                      msg=f"I11 binding params missing: {missing}")
+            try:
+                from hermes_cli import kanban_db_connect as kbc
+                from hermes_cli import kanban_db as kb
+                from talos.executor.constants import EXECUTOR_AUTHOR
+                with kbc.connect() as conn:
+                    for name in missing:
+                        kb.add_comment(
+                            conn, task.id,
+                            author=EXECUTOR_AUTHOR,
+                            body=f"[执行器] 任务未提供绑定参数 {name}（I11），不拉起实例。",
+                        )
+                    kb.complete_task(
+                        conn, task.id,
+                        summary=f"⚠️ 降级放行: 缺失绑定参数 {', '.join(missing)}",
+                        metadata={
+                            "degraded": True,
+                            "degraded_checks": [f"缺失绑定参数: {name}" for name in missing],
+                            "verdict": "degraded",
+                        },
+                        expected_run_id=run_id,
+                    )
+            except Exception as e:
+                log_event("error", task_id=task.id, run_id=run_id,
+                          msg=f"I11 defect finalize failed: {e}")
+            return None
 
         # Mint credentials (§9)
         creds = mint_credentials(task, decl.credentials, repo_url, tdir)
 
         # Write context.md (§5.3)
-        context_md = _build_context_md(conn, task, decl)
+        context_md = _build_context_md(task, decl)
         (tdir / "context.md").write_text(context_md, encoding="utf-8")
 
         # Build docker command
@@ -291,7 +363,10 @@ def make_spawn_fn(conn: Any):
 
         # Start sentinel process (forks; sentinel runs docker run, waits for
         # container exit, then waits for adjudication marker — §3, I8)
-        pid = start_sentinel(task.id, run_id, tdir, cmd)
+        # 实例：哨兵寿命 = 60 + verification_timeout_s + 60（v2.1 FIX #4）
+        verification_timeout_s = decl.verification.timeout_s if decl.verification.required else 0
+        adj_timeout = 60 + verification_timeout_s + 60
+        pid = start_sentinel(task.id, run_id, tdir, cmd, adj_timeout=adj_timeout)
 
         log_event("dispatched", task_id=task.id, run_id=run_id,
                   duration_ms=(time.time() - t0) * 1000,

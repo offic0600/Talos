@@ -14,6 +14,7 @@ completion_contract:
 deliverables:
   - kind: platform_attachment
     path: "${workspace}/docs/spec.md"
+requires: []
 ---
 
 # talos-doc-demo

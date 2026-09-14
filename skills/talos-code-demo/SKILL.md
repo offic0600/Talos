@@ -19,6 +19,7 @@ deliverables:
   - kind: git_branch
     repo: "${task.repo}"
     branch: "${git.branch}"
+requires: [repo, branch]
 credentials:
   - kind: gitlab
     scope: write_repository

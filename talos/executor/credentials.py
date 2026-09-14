@@ -40,8 +40,9 @@ def _gitlab_api(method: str, path: str, body: Optional[dict] = None) -> dict:
         body_text = ""
         try:
             body_text = e.read().decode("utf-8", errors="replace")
-        except Exception:
-            pass
+        except Exception as de:
+            # 实例：禁止空吞异常（v2.1 FIX #3）
+            log_event("error", msg=f"GitLab API error body decode failed: {de}")
         raise RuntimeError(f"GitLab API {method} {path} → HTTP {e.code}: {body_text}") from e
 
 
@@ -171,8 +172,10 @@ def revoke_gitlab_token(task_id: str, run_id: int, creds_dir: Path) -> None:
     for f in creds_dir.glob("*"):
         try:
             f.unlink()
-        except OSError:
-            pass
+        except OSError as e:
+            # 实例：禁止空吞异常（v2.1 FIX #3）
+            log_event("error", task_id=task_id, run_id=run_id,
+                      msg=f"failed to unlink cred file {f}: {e}")
 
 
 def cleanup_orphan_tokens() -> int:
@@ -198,8 +201,9 @@ def cleanup_orphan_tokens() -> int:
         for row in rows:
             if row["current_run_id"]:
                 live_token_names.add(f"talos-{row['id']}-{row['current_run_id']}")
-    except Exception:
-        pass
+    except Exception as e:
+        # 实例：禁止空吞异常（v2.1 FIX #3）
+        log_event("error", msg=f"cleanup_orphan_tokens: DB query failed: {e}")
 
     # Scan all projects the executor has used (talos-pilot + Talos)
     project_ids = ["16280", "16288"]  # talos-pilot + Talos

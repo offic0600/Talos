@@ -11,6 +11,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from talos.executor.redact import redact_dict
+
 # ── Paths ────────────────────────────────────────────────────────────────
 
 HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
@@ -45,8 +47,9 @@ ES_URL = os.environ.get("TALOS_ES_URL", "")
 #: Worker container name prefix.
 WORKER_PREFIX = "hermes-worker-"
 
-#: Worker image.
-WORKER_IMAGE = os.environ.get("TALOS_WORKER_IMAGE", "talos-worker:latest")
+#: Worker image.  Default changed in v2.1 §11 (#9) to match the actual
+#: image built/used by hermes-agent.
+WORKER_IMAGE = os.environ.get("TALOS_WORKER_IMAGE", "hermes-worker:latest")
 
 #: Container-internal HERMES_HOME.
 CONTAINER_HH = "/tmp/hermes-worker-home"
@@ -99,6 +102,8 @@ def log_event(
     if duration_ms is not None:
         record["duration_ms"] = round(duration_ms, 1)
     record.update(extra)
+    # v2.1 §9 I6: redact sensitive values before writing to disk.
+    record = redact_dict(record)
     EXECUTOR_LOG.parent.mkdir(parents=True, exist_ok=True)
     with open(EXECUTOR_LOG, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")

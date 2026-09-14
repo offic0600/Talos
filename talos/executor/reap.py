@@ -47,8 +47,10 @@ def reap_credentials(task_id: str, run_id: int) -> None:
         # Remove creds dir contents
         try:
             shutil.rmtree(creds_dir)
-        except OSError:
-            pass
+        except OSError as e:
+            # 实例：禁止空吞异常（v2.1 FIX #3）
+            log_event("error", task_id=task_id, run_id=run_id,
+                      msg=f"reap_credentials: rmtree creds failed: {e}")
 
 
 def reap_task_dir(task_id: str, run_id: int, *, retain_days: int = 7) -> None:
@@ -70,8 +72,10 @@ def reap_task_dir(task_id: str, run_id: int, *, retain_days: int = 7) -> None:
         shutil.rmtree(tdir)
         log_event("cleaned", task_id=task_id, run_id=run_id,
                   extra={"action": "task_dir_removed", "age_days": age / 86400})
-    except OSError:
-        pass
+    except OSError as e:
+        # 实例：禁止空吞异常（v2.1 FIX #3）
+        log_event("error", task_id=task_id, run_id=run_id,
+                  msg=f"reap_task_dir failed: {e}")
 
 
 def reap(task_id: str, run_id: int, *, retain_days: int = 7) -> None:
@@ -87,8 +91,10 @@ def reap(task_id: str, run_id: int, *, retain_days: int = 7) -> None:
     marker = tdir / "adjudicated"
     try:
         marker.touch()
-    except OSError:
-        pass
+    except OSError as e:
+        # 实例：禁止空吞异常（v2.1 FIX #3）
+        log_event("error", task_id=task_id, run_id=run_id,
+                  msg=f"failed to write adjudicated marker: {e}")
     reap_container(task_id, run_id)
     reap_credentials(task_id, run_id)
     reap_task_dir(task_id, run_id, retain_days=retain_days)

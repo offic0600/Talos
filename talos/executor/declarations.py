@@ -104,6 +104,7 @@ class Declaration:
     verification: VerificationSpec = field(default_factory=VerificationSpec)
     deliverables: list[DeliverableSpec] = field(default_factory=list)
     credentials: list[CredentialSpec] = field(default_factory=list)
+    requires: list[str] = field(default_factory=list)  # I11: binding params this component needs
     raw: dict = field(default_factory=dict)
 
 
@@ -188,6 +189,7 @@ def load_declarations(skills: Optional[list[str]], task: Any = None) -> Declarat
     all_artifacts: list[ArtifactSpec] = []
     all_deliverables: list[DeliverableSpec] = []
     all_credentials: list[CredentialSpec] = []
+    all_requires: set[str] = set()
     max_mem = 0
     max_cpus = 0.0
 
@@ -263,6 +265,14 @@ def load_declarations(skills: Optional[list[str]], task: Any = None) -> Declarat
                     ttl=str(cred.get("ttl", "task")),
                 ))
 
+        # requires (v2.1, I11): binding param names this component needs.
+        # Values come from the task; the executor verifies presence before spawn.
+        req_list = fm.get("requires", [])
+        if isinstance(req_list, list):
+            for req in req_list:
+                if isinstance(req, str) and req:
+                    all_requires.add(req)
+
     if max_mem > 0:
         merged.resources.memory_mb = max_mem
     if max_cpus > 0:
@@ -270,6 +280,7 @@ def load_declarations(skills: Optional[list[str]], task: Any = None) -> Declarat
     merged.artifacts = all_artifacts
     merged.deliverables = all_deliverables
     merged.credentials = all_credentials
+    merged.requires = sorted(all_requires)
 
     # Default git branch if not set
     if not merged.git.branch and task is not None:

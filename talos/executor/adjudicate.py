@@ -138,7 +138,7 @@ def check_git_pushed(decl: Declaration, bundle: CollectedBundle) -> tuple[list[s
     """Check git branch exists on remote and sha matches self-report (§6, I4).
 
     Uses ``git ls-remote`` — the authoritative source, not the worker's
-    self-report.
+    self-report. Repo/branch come from injected bindings (I11).
     """
     problems: list[str] = []
     defects: list[str] = []
@@ -146,8 +146,8 @@ def check_git_pushed(decl: Declaration, bundle: CollectedBundle) -> tuple[list[s
     if not decl.git.require_push or not decl.git.branch:
         return problems, defects
 
-    # Determine repo URL from result.json artifacts or task
-    repo_url = _get_repo_url(decl, bundle)
+    # I11: repo URL from injected declaration deliverables, NOT result.json
+    repo_url = _get_injected_repo(decl)
     if not repo_url:
         # No repo declared — skip git check
         return problems, defects
@@ -171,6 +171,23 @@ def check_git_pushed(decl: Declaration, bundle: CollectedBundle) -> tuple[list[s
         problems.append(
             f"sha 不匹配: 自报 {self_sha[:12]}, 远端 {remote_sha[:12]}"
         )
+
+    # I11: binding comparison — if 实例 self-reported repo/branch in
+    # result.json differ from injected values, that's a problem.
+    if bundle.result_json:
+        for art in bundle.result_json.get("artifacts", []):
+            if not isinstance(art, dict):
+                continue
+            if art.get("kind") != "git_branch":
+                continue
+            self_repo = art.get("repo", "")
+            self_branch = art.get("branch", "")
+            if self_repo and self_repo != repo_url:
+                problems.append("自报绑定与任务不符")
+                break
+            if self_branch and self_branch != branch:
+                problems.append("自报绑定与任务不符")
+                break
 
     return problems, defects
 
@@ -268,13 +285,19 @@ def _check_ci(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], li
     problems: list[str] = []
     defects: list[str] = []
 
-    repo_url = _get_repo_url(decl, bundle)
+    # I11: repo URL from injected declaration deliverables, NOT result.json
+    repo_url = _get_injected_repo(decl)
     if not repo_url:
         defects.append("CI 验证无法确定仓库 URL")
         return problems, defects
 
     branch = decl.git.branch
-    sha = _get_self_reported_sha(bundle, branch)
+    # I11: sha from ls-remote (authoritative), NOT self-reported from result.json
+    try:
+        sha = _ls_remote(repo_url, branch)
+    except RuntimeError:
+        defects.append(f"CI 验证: 仓库不可达: {repo_url}")
+        return problems, defects
 
     project_id = _project_id_from_url(repo_url)
     if not project_id:
@@ -342,6 +365,10 @@ def _check_evidence(decl: Declaration, bundle: CollectedBundle) -> tuple[list[st
     The state.db is copied out and read on the host with HERMES_HOME pointed
     at the task directory. This is explicitly marked as potentially tamperable
     in the design doc — it's the evidence *source*, not an authority.
+
+    实例：调用 hermes ``verification_status`` 函数读取证据状态，不再猜测表名；
+    HERMES_HOME 指向拷出的任务目录；session_id 从 state.db sessions 表最新行获取
+    （v2.1 FIX #5）。
     """
     problems: list[str] = []
     defects: list[str] = []
@@ -363,42 +390,54 @@ def _check_evidence(decl: Declaration, bundle: CollectedBundle) -> tuple[list[st
         defects.append("证据账本 state.db 不可读")
         return problems, defects
 
-    # Try to read verification status from state.db
+    # 实例：获取 session_id from state.db sessions table latest row（v2.1 FIX #5）
+    session_id = None
     try:
         import sqlite3
         conn = sqlite3.connect(str(state_db))
         conn.row_factory = sqlite3.Row
-        # Look for a verification table or similar
+        # Look for a sessions table
         tables = [r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()]
+        if "sessions" in tables:
+            row = conn.execute(
+                "SELECT id FROM sessions ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()
+            if row:
+                session_id = row["id"] if "id" in row.keys() else row[0]
         conn.close()
+    except Exception as e:
+        defects.append(f"证据账本 sessions 表不可读: {e}")
+        return problems, defects
 
-        if "verification_status" in tables:
-            conn = sqlite3.connect(str(state_db))
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT status FROM verification_status ORDER BY rowid DESC LIMIT 1"
-            ).fetchone()
-            conn.close()
-            if row:
-                vstatus = row["status"]
-                if vstatus in ("unverified", "stale", "failed"):
-                    problems.append(f"证据状态: {vstatus}")
-        elif "verification" in tables:
-            conn = sqlite3.connect(str(state_db))
-            conn.row_factory = sqlite3.Row
-            row = conn.execute(
-                "SELECT status FROM verification ORDER BY rowid DESC LIMIT 1"
-            ).fetchone()
-            conn.close()
-            if row:
-                vstatus = row["status"]
-                if vstatus in ("unverified", "stale", "failed"):
-                    problems.append(f"证据状态: {vstatus}")
-        else:
-            # No verification table — can't determine
-            defects.append("证据账本无验证表")
+    if session_id is None:
+        defects.append("证据账本无 session 记录")
+        return problems, defects
+
+    # 实例：调用 hermes verification_status，HERMES_HOME 指向拷出目录（v2.1 FIX #5）
+    try:
+        from agent.verification_evidence import verification_status
+    except ImportError as e:
+        # 实例：导入失败 → defect（v2.1 FIX #5）
+        defects.append(f"证据模块不可导入: {e}")
+        return problems, defects
+
+    try:
+        # 实例：设置 HERMES_HOME 指向拷出的任务目录
+        old_hermes_home = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(bundle.tdir)
+        try:
+            vstatus = verification_status(session_id)
+        finally:
+            # Restore original HERMES_HOME
+            if old_hermes_home is not None:
+                os.environ["HERMES_HOME"] = old_hermes_home
+            else:
+                os.environ.pop("HERMES_HOME", None)
+
+        if vstatus in ("unverified", "stale", "failed"):
+            problems.append(f"证据状态: {vstatus}")
     except Exception as e:
         defects.append(f"证据账本不可读: {e}")
 
@@ -407,12 +446,12 @@ def _check_evidence(decl: Declaration, bundle: CollectedBundle) -> tuple[list[st
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
-def _get_repo_url(decl: Declaration, bundle: CollectedBundle) -> str:
-    """Extract repo URL from result.json artifacts or declaration deliverables."""
-    if bundle.result_json:
-        for art in bundle.result_json.get("artifacts", []):
-            if isinstance(art, dict) and art.get("repo"):
-                return art["repo"]
+def _get_injected_repo(decl: Declaration) -> str:
+    """Get repo URL ONLY from injected declaration deliverables (I11).
+
+    Never reads result.json — that would violate I11 (binding params are
+    executor-injected, 实例 self-reports are only compared, not trusted).
+    """
     for dl in decl.deliverables:
         if dl.kind == "git_branch" and dl.repo:
             return dl.repo
@@ -431,36 +470,41 @@ def _get_self_reported_sha(bundle: CollectedBundle, branch: str) -> Optional[str
 
 
 def _ls_remote(repo_url: str, branch: str) -> Optional[str]:
-    """``git ls-remote <repo> refs/heads/<branch>`` → sha or None.
+    """``git ls-remote --exit-code <repo> refs/heads/<branch>`` → sha or None.
 
     Returns the sha if the branch exists, ``None`` if the branch doesn't
-    exist, and raises ``RuntimeError`` if the repo is unreachable.
+    exist (exit code 2), and raises ``RuntimeError`` if the repo is
+    unreachable (any other non-zero exit).
+
+    实例：使用 --exit-code 区分分支不存在（exit 2）与仓库不可达（其它非零）
+    （v2.1 FIX #7）。
     """
     try:
         result = subprocess.run(
-            ["git", "ls-remote", repo_url, f"refs/heads/{branch}"],
+            ["git", "ls-remote", "--exit-code", repo_url, f"refs/heads/{branch}"],
             capture_output=True, text=True, timeout=30,
         )
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"ls-remote timeout: {repo_url}")
 
-    if result.returncode != 0:
-        err = result.stderr.strip()
-        if "Could not read from remote" in err or "does not appear to be a git" in err or "Permission denied" in err:
-            raise RuntimeError(f"repo unreachable: {repo_url}: {err}")
-        # Non-zero exit with no specific error → branch likely doesn't exist
+    if result.returncode == 0:
+        output = result.stdout.strip()
+        if not output:
+            # 实例：exit 0 但无输出，视为分支不存在
+            return None
+        # Output format: "<sha>\trefs/heads/<branch>"
+        parts = output.split("\t")
+        if len(parts) >= 1 and parts[0]:
+            return parts[0].strip()
         return None
 
-    output = result.stdout.strip()
-    if not output:
-        # Branch doesn't exist
+    if result.returncode == 2:
+        # 实例：exit code 2 = 分支不存在（v2.1 FIX #7）
         return None
 
-    # Output format: "<sha>\trefs/heads/<branch>"
-    parts = output.split("\t")
-    if len(parts) >= 1 and parts[0]:
-        return parts[0].strip()
-    return None
+    # 实例：其它非零退出 = 仓库不可达，抛异常（v2.1 FIX #7）
+    err_first_line = result.stderr.strip().split("\n")[0] if result.stderr.strip() else "unknown error"
+    raise RuntimeError(f"repo unreachable: {repo_url}: {err_first_line}")
 
 
 def _repo_reachable(repo_url: str) -> bool:

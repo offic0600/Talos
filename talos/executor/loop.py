@@ -13,9 +13,13 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import signal
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from talos.executor.adjudicate import adjudicate
@@ -67,8 +71,10 @@ def _is_run_adjudicated(conn: Any, run_id: int) -> bool:
             meta = json.loads(meta_raw) if isinstance(meta_raw, str) else meta_raw
             if isinstance(meta, dict) and "verdict" in meta:
                 return True
-        except (json.JSONDecodeError, TypeError):
-            pass
+        except (json.JSONDecodeError, TypeError) as e:
+            # 实例：禁止空吞异常（v2.1 FIX #3）
+            log_event("error", run_id=run_id,
+                      msg=f"metadata parse failed: {e}")
 
     return False
 
@@ -96,8 +102,10 @@ def _heartbeat_live_containers(conn: Any) -> None:
                 from hermes_cli.kanban_db_dispatch import heartbeat_worker
                 heartbeat_worker(conn, task_id, note="talos-executor",
                                  expected_run_id=run_id)
-            except Exception:
-                pass
+            except Exception as e:
+                # 实例：禁止空吞异常（v2.1 FIX #3）
+                log_event("error", task_id=task_id, run_id=run_id,
+                          msg=f"heartbeat_worker failed: {e}")
 
             log_event("heartbeat", task_id=task_id, run_id=run_id)
         except Exception as e:
@@ -125,8 +133,10 @@ def _adjudicate_exited(conn: Any) -> None:
             task = kb.get_task(conn, task_id)
             if task and task.status == "running" and task.claim_lock:
                 kb.heartbeat_claim(conn, task_id, claimer=task.claim_lock)
-        except Exception:
-            pass
+        except Exception as e:
+            # 实例：禁止空吞异常（v2.1 FIX #3）
+            log_event("error", task_id=task_id, run_id=run_id,
+                      msg=f"adjudication heartbeat failed: {e}")
 
         # Collect
         try:
@@ -156,10 +166,13 @@ def _adjudicate_exited(conn: Any) -> None:
             except Exception as fe:
                 log_event("error", task_id=task_id, run_id=run_id,
                           msg=f"finalize (decl error) failed: {fe}")
+            # 实例：bundle 已在上方收集，不再重复 collect（v2.1 FIX #10）
             try:
-                archive(task_id, run_id, bundle := collect(task_id, run_id), verdict)
-            except Exception:
-                pass
+                archive(task_id, run_id, bundle, verdict)
+            except Exception as ae:
+                # 实例：禁止空吞异常（v2.1 FIX #3）
+                log_event("error", task_id=task_id, run_id=run_id,
+                          msg=f"archive (decl error) failed: {ae}")
             reap(task_id, run_id)
             continue
 
@@ -192,8 +205,12 @@ def _adjudicate_exited(conn: Any) -> None:
 
 
 def _dispatch(conn: Any, spawn_fn: Any) -> None:
-    """Call ``dispatch_once`` to claim and spawn ready tasks (§3)."""
-    from hermes_cli.kanban_db_dispatch import dispatch_once, DEFAULT_FAILURE_LIMIT
+    """Call ``dispatch_once`` to claim and spawn ready tasks (§3).
+
+    实例：使用模块级 ``DEFAULT_FAILURE_LIMIT``，不在函数内重复导入
+    造成 shadowing（v2.1 FIX #10）。
+    """
+    from hermes_cli.kanban_db_dispatch import dispatch_once
 
     try:
         result = dispatch_once(
@@ -220,7 +237,7 @@ def tick(conn: Any, spawn_fn: Optional[Any] = None) -> None:
     t0 = time.time()
 
     if spawn_fn is None:
-        spawn_fn = make_spawn_fn(conn)
+        spawn_fn = make_spawn_fn()
 
     # 1. Adjudicate exited containers (collect → adjudicate → finalize → archive → reap)
     _adjudicate_exited(conn)
@@ -236,6 +253,82 @@ def tick(conn: Any, spawn_fn: Optional[Any] = None) -> None:
 
     log_event("heartbeat", duration_ms=(time.time() - t0) * 1000,
               extra={"tick": True})
+
+
+def _self_check(
+    worker_image: str,
+    kanban_db: Any,
+    gitlab_url: str,
+) -> None:
+    """Startup self-check (§11, v2.1 #9).
+
+    Hard-fail (exit) items:
+      1. ``hermes_cli`` importable
+      2. ``WORKER_IMAGE`` exists in ``docker images``
+      3. Kanban DB path readable
+
+    Warn-only item:
+      4. GitLab reachable
+
+    Each result is printed.  Any hard failure calls ``sys.exit(1)``.
+    """
+    # ── (1) hermes_cli importable — HARD FAIL ────────────────────────
+    try:
+        import hermes_cli  # noqa: F401
+        print("[talos-executor] self-check (1/4) hermes_cli importable: OK")
+    except ImportError as e:
+        print(f"[talos-executor] self-check (1/4) hermes_cli importable: FAIL — {e}")
+        print("[talos-executor] hint: pip install -e ~/.hermes/hermes-agent")
+        sys.exit(1)
+
+    # ── (2) WORKER_IMAGE in docker images — HARD FAIL ────────────────
+    try:
+        result = subprocess.run(
+            ["docker", "image", "inspect", worker_image],
+            capture_output=True, timeout=30,
+        )
+        if result.returncode == 0:
+            print(f"[talos-executor] self-check (2/4) docker image '{worker_image}': OK")
+        else:
+            print(
+                f"[talos-executor] self-check (2/4) docker image '{worker_image}': FAIL — "
+                "image not found"
+            )
+            print(
+                f"[talos-executor] hint: docker build -t {worker_image} <context>"
+            )
+            sys.exit(1)
+    except FileNotFoundError:
+        print("[talos-executor] self-check (2/4) docker image: FAIL — docker not found")
+        sys.exit(1)
+    except subprocess.TimeoutExpired:
+        print("[talos-executor] self-check (2/4) docker image: FAIL — docker inspect timed out")
+        sys.exit(1)
+
+    # ── (3) Kanban DB path readable — HARD FAIL ──────────────────────
+    db_path = Path(kanban_db) if not isinstance(kanban_db, Path) else kanban_db
+    if db_path.is_file() and os.access(str(db_path), os.R_OK):
+        print(f"[talos-executor] self-check (3/4) kanban DB readable: OK ({db_path})")
+    else:
+        print(
+            f"[talos-executor] self-check (3/4) kanban DB readable: FAIL — "
+            f"{db_path} does not exist or is not readable"
+        )
+        print("[talos-executor] hint: check HERMES_KANBAN_DB in /etc/hermes/talos.env")
+        sys.exit(1)
+
+    # ── (4) GitLab reachable — WARN ONLY ─────────────────────────────
+    import urllib.request
+
+    try:
+        urllib.request.urlopen(f"{gitlab_url}/api/v4/version", timeout=10)
+        print(f"[talos-executor] self-check (4/4) GitLab reachable: OK ({gitlab_url})")
+    except Exception as e:
+        print(
+            f"[talos-executor] self-check (4/4) GitLab reachable: WARN — "
+            f"{gitlab_url} not reachable ({e})"
+        )
+        print("[talos-executor] executor will start; GitLab operations may fail")
 
 
 def run_executor(
@@ -263,11 +356,20 @@ def run_executor(
                     signal.signal(sig, _handle)
 
     # Print resolved paths on startup (§11)
-    from talos.executor.constants import KANBAN_DB, EXECUTOR_LOG, TALOS_HOME
+    from talos.executor.constants import (
+        EXECUTOR_LOG, GITLAB_URL, KANBAN_DB, TALOS_HOME, WORKER_IMAGE,
+    )
     print(f"[talos-executor] TALOS_HOME={TALOS_HOME}")
     print(f"[talos-executor] KANBAN_DB={KANBAN_DB}")
     print(f"[talos-executor] EXECUTOR_LOG={EXECUTOR_LOG}")
     print(f"[talos-executor] tick interval={interval}s")
+
+    # ── Deploy self-check (§11, v2.1 #9) ──────────────────────────
+    # Hard-fail items: hermes_cli importable, WORKER_IMAGE exists in
+    # docker images, kanban DB path readable.
+    # Warn-only item: GitLab reachable.
+    # Each result is printed; any hard failure exits immediately.
+    _self_check(WORKER_IMAGE, KANBAN_DB, GITLAB_URL)
 
     # Cleanup orphan tokens at startup (§8, M19) — best-effort, non-blocking.
     # If GitLab is unreachable, the executor still starts and processes local
@@ -291,7 +393,7 @@ def run_executor(
         try:
             with contextlib.closing(kbc.connect()) as conn:
                 if spawn_fn is None:
-                    spawn_fn = make_spawn_fn(conn)
+                    spawn_fn = make_spawn_fn()
                 tick(conn, spawn_fn)
         except Exception as e:
             import traceback

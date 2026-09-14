@@ -180,6 +180,7 @@ class TestAdjudicateDegraded:
             artifacts=[ArtifactSpec(path="${workspace}/src/feature.py", min_bytes=50)],
             git=GitSpec(branch="talos/t_test", require_push=True),
             verification=VerificationSpec(required=True, source="ci", timeout_s=900),
+            deliverables=[DeliverableSpec(kind="git_branch", repo="https://gitlab.example.com/test/repo.git", branch="talos/t_test")],
         )
 
         with patch("talos.executor.adjudicate._ls_remote", return_value="abc123"), \
@@ -309,6 +310,7 @@ class TestAdjudicateUnmet:
             artifacts=[ArtifactSpec(path="/work/src/feature.py", min_bytes=50)],
             git=GitSpec(branch="talos/t_test", require_push=True),
             verification=VerificationSpec(required=False, source="none"),
+            deliverables=[DeliverableSpec(kind="git_branch", repo="https://gitlab.example.com/test/repo.git", branch="talos/t_test")],
         )
 
         with patch("talos.executor.adjudicate._ls_remote", return_value=None), \
@@ -347,6 +349,7 @@ class TestAdjudicateUnmet:
             artifacts=[ArtifactSpec(path="/work/src/feature.py", min_bytes=50)],
             git=GitSpec(branch="talos/t_test", require_push=True),
             verification=VerificationSpec(required=False, source="none"),
+            deliverables=[DeliverableSpec(kind="git_branch", repo="https://gitlab.example.com/test/repo.git", branch="talos/t_test")],
         )
 
         with patch("talos.executor.adjudicate._ls_remote", return_value="realsha"), \
@@ -385,6 +388,7 @@ class TestAdjudicateUnmet:
             artifacts=[ArtifactSpec(path="/work/src/feature.py", min_bytes=50)],
             git=GitSpec(branch="talos/t_test", require_push=True),
             verification=VerificationSpec(required=True, source="ci", timeout_s=900),
+            deliverables=[DeliverableSpec(kind="git_branch", repo="https://gitlab.example.com/test/repo.git", branch="talos/t_test")],
         )
 
         with patch("talos.executor.adjudicate._ls_remote", return_value="abc123"), \
@@ -417,6 +421,7 @@ class TestAdjudicateError:
         decl = make_decl(
             git=GitSpec(branch="talos/t_test", require_push=True),
             verification=VerificationSpec(required=False, source="none"),
+            deliverables=[DeliverableSpec(kind="git_branch", repo="https://gitlab.example.com/test/repo.git", branch="talos/t_test")],
         )
 
         with patch("talos.executor.adjudicate.check_artifacts",
@@ -869,6 +874,7 @@ class TestCheckCiFileDetection:
         decl = make_decl(
             git=GitSpec(branch="talos/no-ci", require_push=True),
             verification=VerificationSpec(required=True, source="ci", timeout_s=900),
+            deliverables=[DeliverableSpec(kind="git_branch", repo="https://gitlab.example.com/test/repo.git", branch="talos/no-ci")],
         )
 
         with patch("talos.executor.adjudicate._gitlab_ci_file_exists", return_value=False), \
@@ -911,6 +917,7 @@ class TestCheckCiPipelineAppearWindow:
         decl = make_decl(
             git=GitSpec(branch="talos/has-ci", require_push=True),
             verification=VerificationSpec(required=True, source="ci", timeout_s=300),
+            deliverables=[DeliverableSpec(kind="git_branch", repo="https://gitlab.example.com/test/repo.git", branch="talos/has-ci")],
         )
 
         pipeline_success = [{"id": 42, "status": "success"}]
@@ -924,6 +931,7 @@ class TestCheckCiPipelineAppearWindow:
 
         with patch("talos.executor.adjudicate._gitlab_ci_file_exists", return_value=True), \
              patch("talos.executor.adjudicate._gitlab_pipelines", side_effect=mock_pipelines), \
+             patch("talos.executor.adjudicate._ls_remote", return_value="abc123"), \
              patch("talos.executor.adjudicate.time.sleep") as mock_sleep:
             problems, defects = _check_ci(decl, bundle)
 

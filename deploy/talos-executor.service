@@ -7,7 +7,8 @@ Wants=network-online.target docker.service
 [Service]
 Type=simple
 # The executor runs the tick loop: dispatch → spawn → heartbeat → adjudicate → finalize → archive → cleanup
-ExecStart=/usr/bin/python3 -m talos.executor.main
+# Use the venv python so hermes_cli (installed via pip install -e ~/.hermes/hermes-agent) resolves
+ExecStart=/opt/talos/.venv/bin/python -m talos.executor.main
 Restart=always
 RestartSec=5
 
@@ -21,8 +22,9 @@ Group=talos
 # Working directory — the Talos package root
 WorkingDirectory=/opt/talos
 
-# PYTHONPATH so `talos.*` imports resolve
-Environment=PYTHONPATH=/opt/talos
+# PYTHONPATH so `talos.*` and `hermes_cli.*` imports resolve.
+# hermes-agent is installed via: pip install -e ~/.hermes/hermes-agent
+Environment=PYTHONPATH=/opt/talos:/home/talos/.hermes/hermes-agent
 
 # Logging
 StandardOutput=journal
