@@ -27,9 +27,11 @@ from __future__ import annotations
 
 import logging
 
-from talos.plugins.path_protect import _pre_tool_call as _path_pre_tool_call
-from talos.plugins.skill_protect import _pre_tool_call as _skill_pre_tool_call
-from talos.plugins.trace_collect import _post_api_request
+# Use relative imports so the plugin works when loaded as a directory plugin
+# by Hermes (hermes_plugins.<slug>) without the `talos` package in PYTHONPATH.
+from .path_protect import _pre_tool_call as _path_pre_tool_call
+from .skill_protect import _pre_tool_call as _skill_pre_tool_call
+from .trace_collect import _post_api_request
 
 logger = logging.getLogger(__name__)
 
