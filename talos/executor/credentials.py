@@ -25,25 +25,40 @@ from urllib.error import URLError, HTTPError
 from talos.executor.constants import GITLAB_ADMIN_TOKEN, GITLAB_URL, log_event
 
 
-def _gitlab_api(method: str, path: str, body: Optional[dict] = None) -> dict:
-    """Call GitLab API v4 with the admin token."""
+def _gitlab_api(method: str, path: str, body: Optional[dict] = None, *, retries: int = 3) -> dict:
+    """Call GitLab API v4 with the admin token.
+
+    Retries on SSL/network errors (``URLError``) up to *retries* times
+    with exponential backoff. HTTP errors (4xx/5xx) are not retried.
+    """
     url = f"{GITLAB_URL}/api/v4{path}"
     data = json.dumps(body).encode() if body else None
-    req = Request(url, data=data, method=method)
-    req.add_header("PRIVATE-TOKEN", GITLAB_ADMIN_TOKEN)
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urlopen(req, timeout=30) as resp:
-            raw = resp.read()
-            return json.loads(raw) if raw else {}
-    except HTTPError as e:
-        body_text = ""
+
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, retries + 1):
+        req = Request(url, data=data, method=method)
+        req.add_header("PRIVATE-TOKEN", GITLAB_ADMIN_TOKEN)
+        req.add_header("Content-Type", "application/json")
         try:
-            body_text = e.read().decode("utf-8", errors="replace")
-        except Exception as de:
-            # 禁止空吞异常（v2.1 FIX #3）
-            log_event("error", msg=f"GitLab API error body decode failed: {de}")
-        raise RuntimeError(f"GitLab API {method} {path} → HTTP {e.code}: {body_text}") from e
+            with urlopen(req, timeout=30) as resp:
+                raw = resp.read()
+                return json.loads(raw) if raw else {}
+        except HTTPError as e:
+            body_text = ""
+            try:
+                body_text = e.read().decode("utf-8", errors="replace")
+            except Exception as de:
+                log_event("error", msg=f"GitLab API error body decode failed: {de}")
+            raise RuntimeError(f"GitLab API {method} {path} → HTTP {e.code}: {body_text}") from e
+        except URLError as e:
+            last_exc = e
+            if attempt < retries:
+                log_event("error", msg=f"GitLab API {method} {path} retry {attempt}/{retries}: {e}")
+                time.sleep(2 * attempt)
+            else:
+                raise RuntimeError(f"GitLab API {method} {path} → URLError after {retries} retries: {e}") from e
+    # Should not reach here
+    raise RuntimeError(f"GitLab API {method} {path} → exhausted retries: {last_exc}")
 
 
 def _project_id_from_repo(repo_url: str) -> Optional[str]:

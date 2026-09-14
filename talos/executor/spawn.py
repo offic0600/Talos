@@ -57,6 +57,7 @@ def _build_context_md(task: Any, decl: Declaration) -> str:
     parts.append(f"- repo: {repo_url or '—'}")
     parts.append(f"- branch: {branch or '—'}")
     parts.append(f"- tenant: {tenant or '—'}")
+    parts.append(f"- workdir: /work")
     parts.append(f"- deliverables: {deliverables_str}")
     parts.append(f"- verification.source: {decl.verification.source}")
 
@@ -103,6 +104,8 @@ def _build_context_md(task: Any, decl: Declaration) -> str:
         "(2) 在 `/task/out/result.json` 写入结果（格式见下）。"
         "不写结果文件视为失败。不要尝试操作看板，你没有看板工具。"
         "仓库、分支等绑定参数以本文件「绑定参数」段为准，不要自行选择或更改。"
+        "仓库已指定 clone 到 /work 本身（`git clone $TALOS_REPO /work` 或在 /work 内 `git init` + `remote add`），"
+        "不要建子目录；声明的产物路径以 /work 为根解析。"
     )
     parts.append(
         "\n```json\n"

@@ -260,24 +260,23 @@ def _self_check(
     kanban_db: Any,
     gitlab_url: str,
 ) -> None:
-    """Startup self-check (§11, v2.1 #9).
+    """Startup self-check (§11, v2.1 #9, v2.2 #4).
 
     Hard-fail (exit) items:
       1. ``hermes_cli`` importable
       2. ``WORKER_IMAGE`` exists in ``docker images``
       3. Kanban DB path readable
-
-    Warn-only item:
-      4. GitLab reachable
+      4. GitLab reachable (v2.2: hard fail)
+      5. Skills installed and match repo (v2.2: md5 check)
 
     Each result is printed.  Any hard failure calls ``sys.exit(1)``.
     """
     # ── (1) hermes_cli importable — HARD FAIL ────────────────────────
     try:
         import hermes_cli  # noqa: F401
-        print("[talos-executor] self-check (1/4) hermes_cli importable: OK")
+        print("[talos-executor] self-check (1/5) hermes_cli importable: OK")
     except ImportError as e:
-        print(f"[talos-executor] self-check (1/4) hermes_cli importable: FAIL — {e}")
+        print(f"[talos-executor] self-check (1/5) hermes_cli importable: FAIL — {e}")
         print("[talos-executor] hint: pip install -e ~/.hermes/hermes-agent")
         sys.exit(1)
 
@@ -288,10 +287,10 @@ def _self_check(
             capture_output=True, timeout=30,
         )
         if result.returncode == 0:
-            print(f"[talos-executor] self-check (2/4) docker image '{worker_image}': OK")
+            print(f"[talos-executor] self-check (2/5) docker image '{worker_image}': OK")
         else:
             print(
-                f"[talos-executor] self-check (2/4) docker image '{worker_image}': FAIL — "
+                f"[talos-executor] self-check (2/5) docker image '{worker_image}': FAIL — "
                 "image not found"
             )
             print(
@@ -299,36 +298,91 @@ def _self_check(
             )
             sys.exit(1)
     except FileNotFoundError:
-        print("[talos-executor] self-check (2/4) docker image: FAIL — docker not found")
+        print("[talos-executor] self-check (2/5) docker image: FAIL — docker not found")
         sys.exit(1)
     except subprocess.TimeoutExpired:
-        print("[talos-executor] self-check (2/4) docker image: FAIL — docker inspect timed out")
+        print("[talos-executor] self-check (2/5) docker image: FAIL — docker inspect timed out")
         sys.exit(1)
 
     # ── (3) Kanban DB path readable — HARD FAIL ──────────────────────
     db_path = Path(kanban_db) if not isinstance(kanban_db, Path) else kanban_db
     if db_path.is_file() and os.access(str(db_path), os.R_OK):
-        print(f"[talos-executor] self-check (3/4) kanban DB readable: OK ({db_path})")
+        print(f"[talos-executor] self-check (3/5) kanban DB readable: OK ({db_path})")
     else:
         print(
-            f"[talos-executor] self-check (3/4) kanban DB readable: FAIL — "
+            f"[talos-executor] self-check (3/5) kanban DB readable: FAIL — "
             f"{db_path} does not exist or is not readable"
         )
         print("[talos-executor] hint: check HERMES_KANBAN_DB in /etc/hermes/talos.env")
         sys.exit(1)
 
-    # ── (4) GitLab reachable — WARN ONLY ─────────────────────────────
+    # ── (4) GitLab reachable — HARD FAIL (v2.2) ─────────────────────
     import urllib.request
+    import urllib.error
+    import ssl
 
+    gl_token = os.environ.get("TALOS_GITLAB_ADMIN_TOKEN", "")
+    # hgit.haier.net may use an internal CA — disable SSL verification
+    ssl_ctx = ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
     try:
-        urllib.request.urlopen(f"{gitlab_url}/api/v4/version", timeout=10)
-        print(f"[talos-executor] self-check (4/4) GitLab reachable: OK ({gitlab_url})")
+        req = urllib.request.Request(
+            f"{gitlab_url}/api/v4/version",
+            headers={"PRIVATE-TOKEN": gl_token} if gl_token else {},
+        )
+        resp = urllib.request.urlopen(req, timeout=10, context=ssl_ctx)
+        print(f"[talos-executor] self-check (4/5) GitLab reachable: OK ({gitlab_url})")
+    except urllib.error.HTTPError as e:
+        print(
+            f"[talos-executor] self-check (4/5) GitLab reachable: FAIL — "
+            f"HTTP {e.code} {e.reason}"
+        )
+        print("[talos-executor] hint: check TALOS_GITLAB_ADMIN_TOKEN in ~/.hermes/talos.env")
+        sys.exit(1)
     except Exception as e:
         print(
-            f"[talos-executor] self-check (4/4) GitLab reachable: WARN — "
+            f"[talos-executor] self-check (4/5) GitLab reachable: FAIL — "
             f"{gitlab_url} not reachable ({e})"
         )
-        print("[talos-executor] executor will start; GitLab operations may fail")
+        print("[talos-executor] hint: check network / VPN / GitLab URL")
+        sys.exit(1)
+
+    # ── (5) Skills installed and match repo (v2.2) — HARD FAIL ──────
+    import hashlib
+
+    repo_skills = Path(__file__).resolve().parent.parent.parent / "skills"
+    home_skills = Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))) / "skills"
+
+    skill_dirs = []
+    if repo_skills.is_dir():
+        for child in sorted(repo_skills.iterdir()):
+            if child.is_dir() and (child / "SKILL.md").is_file():
+                skill_dirs.append(child.name)
+
+    if not skill_dirs:
+        print(f"[talos-executor] self-check (5/5) skills: FAIL — no skills found in {repo_skills}")
+        sys.exit(1)
+
+    all_ok = True
+    for sname in skill_dirs:
+        repo_md = repo_skills / sname / "SKILL.md"
+        home_md = home_skills / sname / "SKILL.md"
+        if not home_md.is_file():
+            print(f"[talos-executor] self-check (5/5) skill '{sname}': FAIL — not installed in {home_skills}")
+            all_ok = False
+            continue
+        repo_hash = hashlib.md5(repo_md.read_bytes()).hexdigest()
+        home_hash = hashlib.md5(home_md.read_bytes()).hexdigest()
+        if repo_hash != home_hash:
+            print(f"[talos-executor] self-check (5/5) skill '{sname}': FAIL — md5 mismatch (repo={repo_hash[:8]} home={home_hash[:8]})")
+            all_ok = False
+        else:
+            print(f"[talos-executor] self-check (5/5) skill '{sname}': OK (md5 {repo_hash[:8]})")
+
+    if not all_ok:
+        print(f"[talos-executor] hint: run deploy/install-skills.sh to sync skills to {home_skills}")
+        sys.exit(1)
 
 
 def run_executor(

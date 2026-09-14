@@ -163,12 +163,23 @@ def _substitute(template: str, task: Any) -> str:
 
 
 def _extract_repo(task: Any) -> str:
-    """Extract repo URL from task (body first-line ``repo:`` or workspace_path)."""
+    """Extract repo URL from task.
+
+    Tries in order:
+      1. body line starting with ``repo:``
+      2. first ``https://`` URL ending in ``.git`` in body (v2.2)
+      3. workspace_path attribute
+    """
     body = getattr(task, "body", None) or ""
     for line in body.splitlines():
         line = line.strip()
         if line.lower().startswith("repo:"):
             return line.split(":", 1)[1].strip()
+    # v2.2: also extract URL from natural-language body text
+    import re
+    url_match = re.search(r'(https?://[^\s]+\.git)', body)
+    if url_match:
+        return url_match.group(1)
     wp = getattr(task, "workspace_path", None)
     if wp and "://" in wp:
         return wp
