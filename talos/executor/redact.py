@@ -61,12 +61,14 @@ def _redact_value(value: Any) -> Any:
 
 
 def redact_env(inspect_json: dict) -> dict:
-    """Redact sensitive environment variables in a ``docker inspect`` JSON.
+    """Redact ALL environment variables in a ``docker inspect`` JSON (v2.3 §18.2 #5).
 
-    Finds ``Config.Env`` (a list of ``KEY=VALUE`` strings) and replaces the
-    value with ``***`` for any key containing KEY / TOKEN / SECRET / PASSWORD /
-    CREDENTIAL (case-insensitive).  Returns a deep copy; the original is
-    not modified.
+    v2.3 change: redact EVERY Config.Env entry's value to ``***``, regardless of
+    whether the key name contains KEY/TOKEN/SECRET/etc. This closes the gap where
+    values like GPG_KEY or API_SERVER_KEY (which don't match the old markers)
+    leaked into archives and logs.
+
+    Returns a deep copy; the original is not modified.
     """
     result = copy.deepcopy(inspect_json)
 
@@ -88,10 +90,8 @@ def redact_env(inspect_json: dict) -> dict:
                 new_env.append(entry)
                 continue
             key, _, _val = entry.partition("=")
-            if any(marker in key.upper() for marker in _SENSITIVE_KEY_MARKERS):
-                new_env.append(f"{key}=***")
-            else:
-                new_env.append(entry)
+            # v2.3 §18.2 #5: redact ALL env values unconditionally.
+            new_env.append(f"{key}=***")
         config["Env"] = new_env
 
     return result

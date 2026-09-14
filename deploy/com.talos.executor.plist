@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.talos.executor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>PYTHONPATH=/Users/zhaoc/.hermes/hermes-agent</string>
+        <string>python3</string>
+        <string>-m</string>
+        <string>talos.executor.main</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/zhaoc/Documents/Projects/AI-Native-Delivery/Talos</string>
+
+    <!-- Environment file is sourced via EnvironmentVariables -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HERMES_HOME</key>
+        <string>/Users/zhaoc/.hermes</string>
+        <key>TALOS_HOME</key>
+        <string>/Users/zhaoc/.hermes/talos</string>
+        <key>TALOS_WORKER_IMAGE</key>
+        <string>hermes-worker:latest</string>
+    </dict>
+
+    <!-- KeepAlive: restart on crash, kill -9, or unexpected exit -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Restart after 5 seconds (matches systemd RestartSec=5) -->
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <!-- Run at load -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Standard output/error paths -->
+    <key>StandardOutPath</key>
+    <string>/Users/zhaoc/.hermes/talos/executor.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/zhaoc/.hermes/talos/executor.stderr.log</string>
+</dict>
+</plist>

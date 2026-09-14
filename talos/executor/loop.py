@@ -28,6 +28,7 @@ from talos.executor.collect import collect
 from talos.executor.constants import (
     DEFAULT_FAILURE_LIMIT,
     EXECUTOR_AUTHOR,
+    TALOS_HOME,
     TICK_INTERVAL,
     log_event,
 )
@@ -35,6 +36,38 @@ from talos.executor.declarations import load_declarations
 from talos.executor.finalize import finalize
 from talos.executor.reap import list_exited_containers, list_running_containers, reap, reap_orphans
 from talos.executor.spawn import make_spawn_fn
+
+#: Alive-signal file path (v2.3 §18.2 #2).
+_EXECUTOR_ALIVE_FILE = TALOS_HOME / "executor.alive"
+
+#: How often (seconds) to touch the alive file.
+_ALIVE_INTERVAL = 5.0
+
+
+def _start_alive_thread(stop_event: threading.Event) -> threading.Thread:
+    """Start a daemon thread that touches executor.alive every 5 seconds (v2.3 §18.2 #2).
+
+    The sentinel reads this file's mtime to determine if the executor is alive,
+    instead of reading executor.jsonl (which is blocked during long adjudication).
+    """
+    def _touch():
+        while not stop_event.is_set():
+            try:
+                _EXECUTOR_ALIVE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                _EXECUTOR_ALIVE_FILE.touch()
+            except OSError as e:
+                log_event("error", msg=f"alive touch failed: {e}")
+            stop_event.wait(timeout=_ALIVE_INTERVAL)
+
+    t = threading.Thread(target=_touch, daemon=True, name="talos-alive")
+    t.start()
+    # Touch immediately so the file exists before the first tick
+    try:
+        _EXECUTOR_ALIVE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _EXECUTOR_ALIVE_FILE.touch()
+    except OSError:
+        pass
+    return t
 
 
 def _is_run_adjudicated(conn: Any, run_id: int) -> bool:
@@ -153,6 +186,7 @@ def _adjudicate_exited(conn: Any) -> None:
             decl = load_declarations(task.skills if task else None, task)
         except Exception as e:
             # DeclarationError or other load failure → error verdict (§6, M12)
+            # v2.3 §18.2 #4: pre-spawn defect → block_task, NOT requeue.
             from talos.executor.adjudicate import Verdict
             from talos.executor.declarations import DeclarationError
             log_event("error", task_id=task_id, run_id=run_id,
@@ -162,10 +196,17 @@ def _adjudicate_exited(conn: Any) -> None:
                 defects=[f"校验器故障: {e}"],
             )
             try:
-                finalize(conn, task_id, run_id, verdict)
+                # v2.3 §18.2 #4: bad declaration = capability block
+                from hermes_cli import kanban_db as kb
+                from talos.executor.constants import EXECUTOR_AUTHOR
+                reason = f"校验器故障: {e}"
+                kb.add_comment(conn, task_id, author=EXECUTOR_AUTHOR,
+                               body=f"[执行器] 裁决(run {run_id})：{reason}")
+                kb.block_task(conn, task_id, reason=reason,
+                              kind="capability", expected_run_id=run_id)
             except Exception as fe:
                 log_event("error", task_id=task_id, run_id=run_id,
-                          msg=f"finalize (decl error) failed: {fe}")
+                          msg=f"block_task (decl error) failed: {fe}")
             # bundle 已在上方收集，不再重复 collect（v2.1 FIX #10）
             try:
                 archive(task_id, run_id, bundle, verdict)
@@ -408,6 +449,9 @@ def run_executor(
             if sig is not None:
                 with contextlib.suppress(ValueError, OSError):
                     signal.signal(sig, _handle)
+
+    # Start alive-signal thread (v2.3 §18.2 #2)
+    _start_alive_thread(stop_event)
 
     # Print resolved paths on startup (§11)
     from talos.executor.constants import (

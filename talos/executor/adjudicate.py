@@ -428,7 +428,9 @@ def _check_evidence(decl: Declaration, bundle: CollectedBundle) -> tuple[list[st
         old_hermes_home = os.environ.get("HERMES_HOME")
         os.environ["HERMES_HOME"] = str(bundle.tdir)
         try:
-            vstatus = verification_status(session_id)
+            # v2.3 §18.2 #3: keyword-only call — verification_status requires
+            # session_id and cwd as keyword arguments.
+            vstatus = verification_status(session_id=str(session_id), cwd=str(bundle.tdir))
         finally:
             # Restore original HERMES_HOME
             if old_hermes_home is not None:
@@ -436,8 +438,12 @@ def _check_evidence(decl: Declaration, bundle: CollectedBundle) -> tuple[list[st
             else:
                 os.environ.pop("HERMES_HOME", None)
 
-        if vstatus in ("unverified", "stale", "failed"):
-            problems.append(f"证据状态: {vstatus}")
+        if isinstance(vstatus, dict):
+            v_status_str = vstatus.get("status", "unknown")
+        else:
+            v_status_str = str(vstatus)
+        if v_status_str in ("unverified", "stale", "failed"):
+            problems.append(f"证据状态: {v_status_str}")
     except Exception as e:
         defects.append(f"证据账本不可读: {e}")
 

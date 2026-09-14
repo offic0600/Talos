@@ -49,36 +49,25 @@ EXECUTOR_HEARTBEAT_MAX_AGE = 60
 
 
 def _executor_is_alive() -> bool:
-    """Check if the executor is alive by reading executor.jsonl last heartbeat.
+    """Check if the executor is alive by reading executor.alive mtime (v2.3 §18.2 #2).
 
-    哨兵等待裁决标记期间每 30 秒检查执行器心跳，
-    若最近一次心跳距今超过 60 秒则判定执行器已死，哨兵退出让内核回收
-    （v2.1 FIX #4）。
+    The executor runs a background thread that touches ~/.hermes/talos/executor.alive
+    every 5 seconds. If the file's mtime is within EXECUTOR_HEARTBEAT_MAX_AGE (60s),
+    the executor is considered alive.
+
+    This replaces the old executor.jsonl tail-read, which was unreliable when the
+    executor was blocked in a long adjudication (CI polling) — the jsonl wasn't
+    being written but the executor was still alive.
     """
-    import json
-    from talos.executor.constants import EXECUTOR_LOG
+    from talos.executor.constants import TALOS_HOME
 
-    if not EXECUTOR_LOG.exists():
+    alive_file = TALOS_HOME / "executor.alive"
+    if not alive_file.exists():
         return False
     try:
-        # Read only the tail of the file (last line) — avoids loading
-        # the entire log into memory when it grows large.
-        with open(EXECUTOR_LOG, "rb") as fh:
-            fh.seek(0, 2)          # seek to end
-            fsize = fh.tell()
-            # read last 2 KB (enough for one JSONL line)
-            read_size = min(fsize, 2048)
-            fh.seek(fsize - read_size)
-            tail = fh.read().decode("utf-8", errors="replace")
-        lines = tail.strip().splitlines()
-        if not lines:
-            return False
-        last = json.loads(lines[-1])
-        ts = last.get("ts", 0)
-        age = time.time() - ts
+        age = time.time() - alive_file.stat().st_mtime
         return age <= EXECUTOR_HEARTBEAT_MAX_AGE
-    except Exception as e:
-        # 禁止空吞异常（v2.1 FIX #3）
+    except OSError as e:
         log_event("error", msg=f"sentinel: executor liveness check failed: {e}")
         return False
 

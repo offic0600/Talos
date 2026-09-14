@@ -123,6 +123,42 @@ def _build_context_md(task: Any, decl: Declaration) -> str:
     return "\n".join(parts)
 
 
+def _generate_container_config(tdir: Path, task: Any) -> Path:
+    """Generate a managed config.yaml for the worker container (v2.3 §18.2 #1).
+
+    The generated config:
+      - Enables talos-plugins (path_protect, skill_protect, trace_collect)
+      - Sets hooks_auto_accept: true (无人值守审批)
+      - Sets dialog_policy: auto_accept
+      - Contains NO host API keys or secrets (those are injected via env vars)
+
+    Returns the path to the generated config file.
+    """
+    config_path = tdir / "config.yaml"
+    config_content = """\
+# Managed by Talos executor — do not edit (v2.3 §18.2 #1)
+# This config is generated per-task and contains no host secrets.
+plugins:
+  enabled:
+    - talos-plugins
+hooks_auto_accept: true
+agent:
+  dialog_policy: auto_accept
+  max_turns: 90
+  tool_use_enforcement: auto
+  verify_on_stop: false
+terminal:
+  backend: local
+  timeout: 180
+toolsets:
+  - hermes-cli
+kanban:
+  dispatch_in_gateway: false
+"""
+    config_path.write_text(config_content, encoding="utf-8")
+    return config_path
+
+
 def _build_env(task: Any, decl: Declaration, creds: dict, repo_url: str) -> list[str]:
     """Build the Docker ``--env`` arguments (§5.2).
 
@@ -197,15 +233,16 @@ def _build_mounts(task: Any, decl: Declaration, tdir: Path, creds: dict) -> list
         if skill_dir.exists():
             mounts.append(f"{skill_dir}:{CONTAINER_HH}/skills/{skill_name}:ro")
 
-    # Config.yaml (ro) — required for plugin registration
-    config = Path("/etc/hermes/config.yaml")
-    if config.exists():
-        mounts.append(f"{config}:{CONTAINER_HH}/config.yaml:ro")
+    # Managed config.yaml (ro) — generated per-task by _generate_container_config
+    # (v2.3 §18.2 #1: spawn generates config with talos plugins enabled,
+    #  no host secrets, auto-accept). No longer mounts host config.yaml.
+    managed_config = tdir / "config.yaml"
+    if managed_config.exists():
+        mounts.append(f"{managed_config}:{CONTAINER_HH}/config.yaml:ro")
     else:
-        # Fallback: managed config in HOME
-        hc = HOME / "config.yaml"
-        if hc.exists():
-            mounts.append(f"{hc}:{CONTAINER_HH}/config.yaml:ro")
+        log_event("error", task_id=getattr(task, "id", None),
+                  run_id=getattr(task, "current_run_id", None),
+                  msg="managed config.yaml not found — _generate_container_config not called?")
 
     # Context file (ro)
     ctx_file = tdir / "context.md"
@@ -265,10 +302,8 @@ def _build_docker_command(
     cmd.append(WORKER_IMAGE)
 
     # Worker entry point (§5.3)
-    # NOTE: design doc says `hermes -p worker --cli --accept-hooks chat -q "..."`
-    # but `-p` is --provider in hermes CLI, not a profile. Correct syntax is
-    # `hermes chat --cli --accept-hooks -q "..."`. This is an implementation
-    # fix, not a design change.
+    # --accept-hooks is now redundant — managed config.yaml sets
+    # hooks_auto_accept: true (v2.3 §18.2 #1). Keep --cli for headless mode.
     # With --entrypoint sh, CMD args are ["-c", '...'] (not ["sh", "-c", ...]).
     cmd.extend([
         "-c",
@@ -333,25 +368,24 @@ def make_spawn_fn():
                 from hermes_cli import kanban_db as kb
                 from talos.executor.constants import EXECUTOR_AUTHOR
                 with kbc.connect() as conn:
-                    for name in missing:
-                        kb.add_comment(
-                            conn, task.id,
-                            author=EXECUTOR_AUTHOR,
-                            body=f"[执行器] 任务未提供绑定参数 {name}（I11），不拉起实例。",
-                        )
-                    kb.complete_task(
+                    reason = f"缺失绑定参数: {', '.join(missing)}（I11），不拉起实例"
+                    kb.add_comment(
                         conn, task.id,
-                        summary=f"⚠️ 降级放行: 缺失绑定参数 {', '.join(missing)}",
-                        metadata={
-                            "degraded": True,
-                            "degraded_checks": [f"缺失绑定参数: {name}" for name in missing],
-                            "verdict": "degraded",
-                        },
+                        author=EXECUTOR_AUTHOR,
+                        body=f"[执行器] {reason}",
+                    )
+                    # v2.3 §18.2 #4: pre-spawn defect → block_task, NOT done.
+                    # Missing binding params = capability block (the executor
+                    # cannot fulfill the task without the binding).
+                    kb.block_task(
+                        conn, task.id,
+                        reason=reason,
+                        kind="capability",
                         expected_run_id=run_id,
                     )
             except Exception as e:
                 log_event("error", task_id=task.id, run_id=run_id,
-                          msg=f"I11 defect finalize failed: {e}")
+                          msg=f"I11 block_task failed: {e}")
             return None
 
         # Mint credentials (§9)
@@ -360,6 +394,10 @@ def make_spawn_fn():
         # Write context.md (§5.3)
         context_md = _build_context_md(task, decl)
         (tdir / "context.md").write_text(context_md, encoding="utf-8")
+
+        # Generate managed container config.yaml (v2.3 §18.2 #1)
+        # Enables talos-plugins, auto-accept, no host secrets
+        _generate_container_config(tdir, task)
 
         # Build docker command
         cmd = _build_docker_command(task, decl, tdir, creds, repo_url)

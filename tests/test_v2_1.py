@@ -88,10 +88,10 @@ def make_bundle(tmp_path, result_json=None, workspace_path=None, exit_code=0):
 # ═══════════════════════════════════════════════════════════════
 
 class TestBindingMissingNoContainer:
-    """I11: 任务缺 requires 里的绑定 → 不拉容器，degraded done。"""
+    """I11: 任务缺 requires 里的绑定 → 不拉容器，block_task（v2.3 §18.2 #4）。"""
 
     def test_missing_repo_binding(self, tmp_path):
-        """decl.requires=[repo] but task has no repo in body → defect, no container."""
+        """decl.requires=[repo] but task has no repo in body → block_task, no container."""
         from talos.executor.spawn import make_spawn_fn
 
         # Task with no repo in body
@@ -114,7 +114,7 @@ class TestBindingMissingNoContainer:
              patch("talos.executor.spawn.mint_credentials", return_value={}), \
              patch("hermes_cli.kanban_db_connect.connect") as mock_connect, \
              patch("hermes_cli.kanban_db.add_comment") as mock_add_comment, \
-             patch("hermes_cli.kanban_db.complete_task") as mock_complete_task:
+             patch("hermes_cli.kanban_db.block_task") as mock_block_task:
             mock_conn = MagicMock()
             mock_connect.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_connect.return_value.__exit__ = MagicMock(return_value=False)
@@ -127,10 +127,12 @@ class TestBindingMissingNoContainer:
         mock_add_comment.assert_called()
         comment_body = mock_add_comment.call_args[1].get("body", "")
         assert "绑定参数" in comment_body or "repo" in comment_body
-        # Verify complete_task was called with degraded
-        mock_complete_task.assert_called()
-        summary = mock_complete_task.call_args[1].get("summary", "")
-        assert "降级" in summary or "缺失" in summary
+        # v2.3 §18.2 #4: block_task called (not complete_task)
+        mock_block_task.assert_called()
+        reason = mock_block_task.call_args[1].get("reason", "")
+        assert "缺失" in reason or "绑定" in reason
+        kind = mock_block_task.call_args[1].get("kind", "")
+        assert kind == "capability"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -341,17 +343,18 @@ class TestRedaction:
     """v2.1 FIX #2: inspect.json and executor.jsonl redacted — no secrets."""
 
     def test_redact_env_masks_sensitive_keys(self):
-        """Config.Env values for KEY/TOKEN/SECRET/PASSWORD/CREDENTIAL → ***."""
+        """v2.3 §18.2 #5: ALL Config.Env values → ***, regardless of key name."""
         inspect = {
             "Config": {
                 "Env": [
                     "TALOS_TASK_ID=t_test",
-                    "ANTHROPIC_API_KEY=sk-ant-verysecret123",
-                    "GITLAB_TOKEN=glpat-abcdef123456",
+                    "ANTHROPIC_API_KEY=«redacted:sk-…»",
+                    "GITLAB_TOKEN=«redacted:glpat-…»",
                     "API_SERVER_KEY=secret-key-value",
                     "DATABASE_PASSWORD=hunter2",
-                    "AWS_CREDENTIAL=AKIAIOSFODNN7EXAMPLE",
+                    "AWS_CREDENTIAL=«redacted:AKIA…»",
                     "PATH=/usr/bin:/bin",
+                    "GPG_KEY=abc123def456",
                 ]
             }
         }
@@ -360,13 +363,15 @@ class TestRedaction:
         env = redacted["Config"]["Env"]
         env_dict = dict(e.split("=", 1) for e in env)
 
-        assert env_dict["TALOS_TASK_ID"] == "t_test"  # not sensitive
-        assert env_dict["PATH"] == "/usr/bin:/bin"  # not sensitive
+        # v2.3: ALL values redacted, including TALOS_TASK_ID and PATH
+        assert env_dict["TALOS_TASK_ID"] == "***"
+        assert env_dict["PATH"] == "***"
         assert env_dict["ANTHROPIC_API_KEY"] == "***"
         assert env_dict["GITLAB_TOKEN"] == "***"
         assert env_dict["API_SERVER_KEY"] == "***"
         assert env_dict["DATABASE_PASSWORD"] == "***"
         assert env_dict["AWS_CREDENTIAL"] == "***"
+        assert env_dict["GPG_KEY"] == "***"
 
     def test_redact_string_masks_glpat(self):
         """redact_string replaces glpat-xxx patterns."""
@@ -412,3 +417,60 @@ class TestRedaction:
 
         # Only *** should be present
         assert "***" in redacted_str
+
+
+# ═══════════════════════════════════════════════════════════════
+# v2.3 §18.2 #2: sentinel reads executor.alive mtime
+# ═══════════════════════════════════════════════════════════════
+
+class TestExecutorAliveFile:
+    """v2.3 §18.2 #2: sentinel _executor_is_alive reads executor.alive mtime."""
+
+    def test_alive_file_fresh(self, tmp_path):
+        """executor.alive mtime within 60s → alive."""
+        import time as _time
+        from talos.executor import constants
+        from talos.executor.sentinel import _executor_is_alive
+
+        alive_file = tmp_path / "executor.alive"
+        alive_file.touch()
+
+        # Patch TALOS_HOME to our temp dir
+        old = constants.TALOS_HOME
+        constants.TALOS_HOME = tmp_path
+        try:
+            assert _executor_is_alive() is True
+        finally:
+            constants.TALOS_HOME = old
+
+    def test_alive_file_stale(self, tmp_path):
+        """executor.alive mtime > 60s → dead."""
+        import os
+        import time as _time
+        from talos.executor import constants
+        from talos.executor.sentinel import _executor_is_alive
+
+        alive_file = tmp_path / "executor.alive"
+        alive_file.touch()
+        # Set mtime to 120 seconds ago
+        old_mtime = _time.time() - 120
+        os.utime(alive_file, (old_mtime, old_mtime))
+
+        old = constants.TALOS_HOME
+        constants.TALOS_HOME = tmp_path
+        try:
+            assert _executor_is_alive() is False
+        finally:
+            constants.TALOS_HOME = old
+
+    def test_alive_file_missing(self, tmp_path):
+        """executor.alive doesn't exist → dead."""
+        from talos.executor import constants
+        from talos.executor.sentinel import _executor_is_alive
+
+        old = constants.TALOS_HOME
+        constants.TALOS_HOME = tmp_path
+        try:
+            assert _executor_is_alive() is False
+        finally:
+            constants.TALOS_HOME = old
