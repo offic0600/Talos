@@ -32,7 +32,7 @@ from talos.executor.constants import (
 def _format_comment(verdict: Verdict, task_id: str, run_id: int) -> str:
     """Format the verdict as a kanban comment (§7, M7).
 
-    实例：评论体带 run 号（v2.1 FIX #8）：``[执行器] 裁决(run N)：...``
+    评论体带 run 号（v2.1 FIX #8）：``[执行器] 裁决(run N)：...``
     """
     if verdict.status == "pass":
         parts = [f"[执行器] 裁决(run {run_id})：通过"]
@@ -99,7 +99,7 @@ def _create_subtasks(conn: Any, task_id: str, verdict: Verdict) -> None:
 def _is_run_kernel_closed(conn: Any, task_id: str, run_id: int) -> bool:
     """Check if a run was closed by the kernel (§7 last row).
 
-    实例：内核已回收的 run（超时/哨兵死）不再落终局；
+    内核已回收的 run（超时/哨兵死）不再落终局；
     判定依据：task_runs.ended_at 非空 或 tasks.current_run_id 已清
     （v2.1 FIX #4 / FIX #8）。
     """
@@ -135,7 +135,7 @@ def _write_kernel_closed_comment(conn: Any, task_id: str, run_id: int,
                                  verdict: Verdict) -> None:
     """Write a 'verdict voided by kernel reclaim' comment (§7 last row).
 
-    实例：内核回收的 run，裁决结果作废，写说明评论（v2.1 FIX #4 / FIX #8）。
+    内核回收的 run，裁决结果作废，写说明评论（v2.1 FIX #4 / FIX #8）。
     """
     from hermes_cli import kanban_db as kb
     summary = verdict.summary[:500] if verdict.summary else verdict.status
@@ -159,7 +159,7 @@ def finalize(
 
     Returns the new task status: ``done``, ``ready``, ``blocked``, or ``triage``.
 
-    实例：先调内核 API 改状态，成功后再写评论（v2.1 FIX #8）；
+    先调内核 API 改状态，成功后再写评论（v2.1 FIX #8）；
     评论体带 run 号。改状态返回 False → 记 error 事件、不写裁决评论，
     并检查该 run 是否已被内核关闭（v2.1 FIX #4 / FIX #8）。
     """
@@ -185,7 +185,7 @@ def finalize(
             verdict.request_review = False
 
     if new_status == "review":
-        # 实例：request_review 成功，写裁决评论后返回
+        # request_review 成功，写裁决评论后返回
         comment = _format_comment(verdict, task_id, run_id)
         try:
             kb.add_comment(conn, task_id, author=EXECUTOR_AUTHOR, body=comment)
@@ -197,7 +197,7 @@ def finalize(
                   extra={"new_status": new_status})
         return new_status
 
-    # 实例：先调内核 API 改状态，再写评论（v2.1 FIX #8）
+    # 先调内核 API 改状态，再写评论（v2.1 FIX #8）
     kernel_ok = False
 
     # Route based on verdict
@@ -284,7 +284,7 @@ def finalize(
                       msg=f"_record_task_failure (error) failed: {e}")
             new_status = "unknown"
 
-    # 实例：内核 API 成功后写裁决评论；失败则检查内核回收（v2.1 FIX #8 / FIX #4）
+    # 内核 API 成功后写裁决评论；失败则检查内核回收（v2.1 FIX #8 / FIX #4）
     if kernel_ok:
         comment = _format_comment(verdict, task_id, run_id)
         try:
@@ -292,7 +292,7 @@ def finalize(
         except Exception as e:
             log_event("error", task_id=task_id, run_id=run_id, msg=f"add_comment failed: {e}")
     else:
-        # 实例：内核 API 返回 False → 记 error，不写裁决评论，检查内核回收
+        # 内核 API 返回 False → 记 error，不写裁决评论，检查内核回收
         log_event("error", task_id=task_id, run_id=run_id,
                   msg=f"kernel API returned False for verdict={verdict.status}")
         if _is_run_kernel_closed(conn, task_id, run_id):

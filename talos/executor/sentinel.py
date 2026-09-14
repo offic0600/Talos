@@ -37,7 +37,7 @@ from talos.executor.constants import (
 )
 
 #: Default adjudication timeout if no verification_timeout_s is provided.
-#: 实例：哨兵寿命由裁决决定，不由常数决定（v2.1 FIX #4）；
+#: 哨兵寿命由裁决决定，不由常数决定（v2.1 FIX #4）；
 #: 实际值 = 60 + verification_timeout_s + 60，由调用方传入。
 DEFAULT_ADJ_TIMEOUT = 300
 
@@ -51,7 +51,7 @@ EXECUTOR_HEARTBEAT_MAX_AGE = 60
 def _executor_is_alive() -> bool:
     """Check if the executor is alive by reading executor.jsonl last heartbeat.
 
-    实例：哨兵等待裁决标记期间每 30 秒检查执行器心跳，
+    哨兵等待裁决标记期间每 30 秒检查执行器心跳，
     若最近一次心跳距今超过 60 秒则判定执行器已死，哨兵退出让内核回收
     （v2.1 FIX #4）。
     """
@@ -61,9 +61,16 @@ def _executor_is_alive() -> bool:
     if not EXECUTOR_LOG.exists():
         return False
     try:
-        # Read the last line of executor.jsonl
-        with open(EXECUTOR_LOG, "r", encoding="utf-8") as fh:
-            lines = fh.readlines()
+        # Read only the tail of the file (last line) — avoids loading
+        # the entire log into memory when it grows large.
+        with open(EXECUTOR_LOG, "rb") as fh:
+            fh.seek(0, 2)          # seek to end
+            fsize = fh.tell()
+            # read last 2 KB (enough for one JSONL line)
+            read_size = min(fsize, 2048)
+            fh.seek(fsize - read_size)
+            tail = fh.read().decode("utf-8", errors="replace")
+        lines = tail.strip().splitlines()
         if not lines:
             return False
         last = json.loads(lines[-1])
@@ -71,7 +78,7 @@ def _executor_is_alive() -> bool:
         age = time.time() - ts
         return age <= EXECUTOR_HEARTBEAT_MAX_AGE
     except Exception as e:
-        # 实例：禁止空吞异常（v2.1 FIX #3）
+        # 禁止空吞异常（v2.1 FIX #3）
         log_event("error", msg=f"sentinel: executor liveness check failed: {e}")
         return False
 
@@ -90,7 +97,7 @@ def run_sentinel(task_id: str, run_id: int, tdir: Path, docker_cmd: list[str],
         The full ``docker run -d --name ...`` command to start the container.
     adj_timeout : int
         How long to wait for the adjudication marker after container exit.
-        实例：由调用方计算 60 + verification_timeout_s + 60 传入（v2.1 FIX #4）。
+        由调用方计算 60 + verification_timeout_s + 60 传入（v2.1 FIX #4）。
 
     Returns
     ----------
@@ -108,7 +115,7 @@ def run_sentinel(task_id: str, run_id: int, tdir: Path, docker_cmd: list[str],
                 capture_output=True, text=True, timeout=10,
             )
         except Exception as e:
-            # 实例：禁止空吞异常（v2.1 FIX #3）
+            # 禁止空吞异常（v2.1 FIX #3）
             log_event("error", task_id=task_id, run_id=run_id,
                       msg=f"sentinel: docker kill on SIGTERM failed: {e}")
         sys.exit(0)
@@ -140,14 +147,14 @@ def run_sentinel(task_id: str, run_id: int, tdir: Path, docker_cmd: list[str],
         )
     except subprocess.TimeoutExpired:
         # Container ran too long — kernel should have killed the sentinel by now
-        # 实例：禁止空吞异常（v2.1 FIX #3）
+        # 禁止空吞异常（v2.1 FIX #3）
         log_event("error", task_id=task_id, run_id=run_id,
                   msg="sentinel: docker wait timed out (3600s)")
 
     log_event("sentinel_container_exited", task_id=task_id, run_id=run_id)
 
     # 3. Wait for adjudication marker
-    # 实例：哨兵寿命 = adj_timeout（由调用方计算 60 + verification_timeout_s + 60）；
+    # 哨兵寿命 = adj_timeout（由调用方计算 60 + verification_timeout_s + 60）；
     # 等待期间每 30 秒检查执行器心跳，若超过 60 秒无心跳则退出让内核回收
     # （v2.1 FIX #4）。
     deadline = time.time() + adj_timeout
@@ -156,7 +163,7 @@ def run_sentinel(task_id: str, run_id: int, tdir: Path, docker_cmd: list[str],
         if adjudicated_marker.exists():
             log_event("sentinel_adjudicated", task_id=task_id, run_id=run_id)
             return 0
-        # 实例：每 30 秒检查执行器存活（v2.1 FIX #4）
+        # 每 30 秒检查执行器存活（v2.1 FIX #4）
         if time.time() - last_liveness_check >= EXECUTOR_LIVENESS_CHECK_INTERVAL:
             last_liveness_check = time.time()
             if not _executor_is_alive():
@@ -178,7 +185,7 @@ def start_sentinel(task_id: str, run_id: int, tdir: Path, docker_cmd: list[str],
     The sentinel is a child of the executor process. If the executor crashes,
     the sentinel is reparented to init and continues running.
 
-    实例：adj_timeout 由 spawn.py 计算 60 + verification_timeout_s + 60 传入
+    adj_timeout 由 spawn.py 计算 60 + verification_timeout_s + 60 传入
     （v2.1 FIX #4）。
     """
     pid = os.fork()

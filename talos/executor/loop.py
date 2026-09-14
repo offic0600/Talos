@@ -72,7 +72,7 @@ def _is_run_adjudicated(conn: Any, run_id: int) -> bool:
             if isinstance(meta, dict) and "verdict" in meta:
                 return True
         except (json.JSONDecodeError, TypeError) as e:
-            # 实例：禁止空吞异常（v2.1 FIX #3）
+            # 禁止空吞异常（v2.1 FIX #3）
             log_event("error", run_id=run_id,
                       msg=f"metadata parse failed: {e}")
 
@@ -103,7 +103,7 @@ def _heartbeat_live_containers(conn: Any) -> None:
                 heartbeat_worker(conn, task_id, note="talos-executor",
                                  expected_run_id=run_id)
             except Exception as e:
-                # 实例：禁止空吞异常（v2.1 FIX #3）
+                # 禁止空吞异常（v2.1 FIX #3）
                 log_event("error", task_id=task_id, run_id=run_id,
                           msg=f"heartbeat_worker failed: {e}")
 
@@ -134,7 +134,7 @@ def _adjudicate_exited(conn: Any) -> None:
             if task and task.status == "running" and task.claim_lock:
                 kb.heartbeat_claim(conn, task_id, claimer=task.claim_lock)
         except Exception as e:
-            # 实例：禁止空吞异常（v2.1 FIX #3）
+            # 禁止空吞异常（v2.1 FIX #3）
             log_event("error", task_id=task_id, run_id=run_id,
                       msg=f"adjudication heartbeat failed: {e}")
 
@@ -166,11 +166,11 @@ def _adjudicate_exited(conn: Any) -> None:
             except Exception as fe:
                 log_event("error", task_id=task_id, run_id=run_id,
                           msg=f"finalize (decl error) failed: {fe}")
-            # 实例：bundle 已在上方收集，不再重复 collect（v2.1 FIX #10）
+            # bundle 已在上方收集，不再重复 collect（v2.1 FIX #10）
             try:
                 archive(task_id, run_id, bundle, verdict)
             except Exception as ae:
-                # 实例：禁止空吞异常（v2.1 FIX #3）
+                # 禁止空吞异常（v2.1 FIX #3）
                 log_event("error", task_id=task_id, run_id=run_id,
                           msg=f"archive (decl error) failed: {ae}")
             reap(task_id, run_id)
@@ -207,7 +207,7 @@ def _adjudicate_exited(conn: Any) -> None:
 def _dispatch(conn: Any, spawn_fn: Any) -> None:
     """Call ``dispatch_once`` to claim and spawn ready tasks (§3).
 
-    实例：使用模块级 ``DEFAULT_FAILURE_LIMIT``，不在函数内重复导入
+    使用模块级 ``DEFAULT_FAILURE_LIMIT``，不在函数内重复导入
     造成 shadowing（v2.1 FIX #10）。
     """
     from hermes_cli.kanban_db_dispatch import dispatch_once

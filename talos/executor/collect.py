@@ -64,7 +64,7 @@ def _docker_inspect(container: str) -> dict:
             data = json.loads(result.stdout)
             return data[0] if isinstance(data, list) and data else {}
     except (json.JSONDecodeError, subprocess.TimeoutExpired) as e:
-        # 实例：禁止空吞异常（v2.1 FIX #3）
+        # 禁止空吞异常（v2.1 FIX #3）
         log_event("error", msg=f"docker inspect failed: {e}")
     return {}
 

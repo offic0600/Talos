@@ -39,7 +39,7 @@ def _build_context_md(task: Any, decl: Declaration) -> str:
     Order: ⓪ 绑定参数段 (v2.1, I11) ① ``hermes kanban context`` output
     ② declaration summary ③ closing requirements (fixed text).
 
-    实例：本函数自行通过 ``kanban_db_connect`` 开连接，不接收外部 conn，
+    本函数自行通过 ``kanban_db_connect`` 开连接，不接收外部 conn，
     避免闭包持有已关闭的连接（v2.1 FIX #3）。
     """
     parts: list[str] = []
@@ -67,7 +67,7 @@ def _build_context_md(task: Any, decl: Declaration) -> str:
         with kbc.connect() as conn:
             parts.append(build_worker_context(conn, task.id))
     except Exception as e:
-        # 实例：上下文生成失败必须记 error，不得静默退化（v2.1 FIX #3）
+        # 上下文生成失败必须记 error，不得静默退化（v2.1 FIX #3）
         log_event("error", task_id=getattr(task, "id", None),
                   run_id=getattr(task, "current_run_id", None),
                   msg=f"build_worker_context failed: {e}")
@@ -140,7 +140,7 @@ def _build_env(task: Any, decl: Declaration, creds: dict, repo_url: str) -> list
     env.append("HERMES_RESOURCE_SOURCE=talos-executor")
 
     # Git config (§5.2): credential helper + author identity
-    # 实例：注入 user.email，避免提交无作者邮箱（v2.1 FIX #6）
+    # 注入 user.email，避免提交无作者邮箱（v2.1 FIX #6）
     env.append("GIT_CONFIG_COUNT=3")
     env.append("GIT_CONFIG_KEY_0=credential.helper")
     env.append("GIT_CONFIG_VALUE_0=store --file=/task/creds/git-credentials")
@@ -286,7 +286,7 @@ def make_spawn_fn():
     for liveness checks (``os.kill(pid, 0)``) and signal delivery
     (``os.kill(pid, SIGTERM/SIGKILL)``).
 
-    实例：闭包不接收 conn 参数，spawn_fn 内部自行通过 ``kanban_db_connect``
+    闭包不接收 conn 参数，spawn_fn 内部自行通过 ``kanban_db_connect``
     开连接（v2.1 FIX #3）。
     """
 
@@ -363,7 +363,7 @@ def make_spawn_fn():
 
         # Start sentinel process (forks; sentinel runs docker run, waits for
         # container exit, then waits for adjudication marker — §3, I8)
-        # 实例：哨兵寿命 = 60 + verification_timeout_s + 60（v2.1 FIX #4）
+        # 哨兵寿命 = 60 + verification_timeout_s + 60（v2.1 FIX #4）
         verification_timeout_s = decl.verification.timeout_s if decl.verification.required else 0
         adj_timeout = 60 + verification_timeout_s + 60
         pid = start_sentinel(task.id, run_id, tdir, cmd, adj_timeout=adj_timeout)

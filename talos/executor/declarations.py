@@ -288,4 +288,22 @@ def load_declarations(skills: Optional[list[str]], task: Any = None) -> Declarat
         if tid:
             merged.git.branch = f"talos/{tid}"
 
+    # Re-substitute deliverables with resolved git.branch (v2.1 fix):
+    # ${git.branch} in deliverables wasn't resolved earlier because
+    # task.branch_name was None — the resolved value is only available
+    # after the git section + default branch logic above.
+    if merged.git.branch:
+        for dl in merged.deliverables:
+            if dl.branch and "${git.branch}" in dl.branch:
+                dl_resolved = dl.branch.replace("${git.branch}", merged.git.branch)
+                # Also resolve ${task.repo} if still present
+                repo_url = _extract_repo(task) if task else ""
+                if repo_url and "${task.repo}" in dl_resolved:
+                    dl_resolved = dl_resolved.replace("${task.repo}", repo_url)
+                dl.branch = dl_resolved
+            if dl.repo and "${task.repo}" in dl.repo:
+                repo_url = _extract_repo(task) if task else ""
+                if repo_url:
+                    dl.repo = dl.repo.replace("${task.repo}", repo_url)
+
     return merged

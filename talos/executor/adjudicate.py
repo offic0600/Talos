@@ -366,7 +366,7 @@ def _check_evidence(decl: Declaration, bundle: CollectedBundle) -> tuple[list[st
     at the task directory. This is explicitly marked as potentially tamperable
     in the design doc — it's the evidence *source*, not an authority.
 
-    实例：调用 hermes ``verification_status`` 函数读取证据状态，不再猜测表名；
+    调用 hermes ``verification_status`` 函数读取证据状态，不再猜测表名；
     HERMES_HOME 指向拷出的任务目录；session_id 从 state.db sessions 表最新行获取
     （v2.1 FIX #5）。
     """
@@ -390,7 +390,7 @@ def _check_evidence(decl: Declaration, bundle: CollectedBundle) -> tuple[list[st
         defects.append("证据账本 state.db 不可读")
         return problems, defects
 
-    # 实例：获取 session_id from state.db sessions table latest row（v2.1 FIX #5）
+    # 获取 session_id from state.db sessions table latest row（v2.1 FIX #5）
     session_id = None
     try:
         import sqlite3
@@ -415,16 +415,16 @@ def _check_evidence(decl: Declaration, bundle: CollectedBundle) -> tuple[list[st
         defects.append("证据账本无 session 记录")
         return problems, defects
 
-    # 实例：调用 hermes verification_status，HERMES_HOME 指向拷出目录（v2.1 FIX #5）
+    # 调用 hermes verification_status，HERMES_HOME 指向拷出目录（v2.1 FIX #5）
     try:
         from agent.verification_evidence import verification_status
     except ImportError as e:
-        # 实例：导入失败 → defect（v2.1 FIX #5）
+        # 导入失败 → defect（v2.1 FIX #5）
         defects.append(f"证据模块不可导入: {e}")
         return problems, defects
 
     try:
-        # 实例：设置 HERMES_HOME 指向拷出的任务目录
+        # 设置 HERMES_HOME 指向拷出的任务目录
         old_hermes_home = os.environ.get("HERMES_HOME")
         os.environ["HERMES_HOME"] = str(bundle.tdir)
         try:
@@ -476,7 +476,7 @@ def _ls_remote(repo_url: str, branch: str) -> Optional[str]:
     exist (exit code 2), and raises ``RuntimeError`` if the repo is
     unreachable (any other non-zero exit).
 
-    实例：使用 --exit-code 区分分支不存在（exit 2）与仓库不可达（其它非零）
+    使用 --exit-code 区分分支不存在（exit 2）与仓库不可达（其它非零）
     （v2.1 FIX #7）。
     """
     try:
@@ -490,7 +490,7 @@ def _ls_remote(repo_url: str, branch: str) -> Optional[str]:
     if result.returncode == 0:
         output = result.stdout.strip()
         if not output:
-            # 实例：exit 0 但无输出，视为分支不存在
+            # exit 0 但无输出，视为分支不存在
             return None
         # Output format: "<sha>\trefs/heads/<branch>"
         parts = output.split("\t")
@@ -499,10 +499,10 @@ def _ls_remote(repo_url: str, branch: str) -> Optional[str]:
         return None
 
     if result.returncode == 2:
-        # 实例：exit code 2 = 分支不存在（v2.1 FIX #7）
+        # exit code 2 = 分支不存在（v2.1 FIX #7）
         return None
 
-    # 实例：其它非零退出 = 仓库不可达，抛异常（v2.1 FIX #7）
+    # 其它非零退出 = 仓库不可达，抛异常（v2.1 FIX #7）
     err_first_line = result.stderr.strip().split("\n")[0] if result.stderr.strip() else "unknown error"
     raise RuntimeError(f"repo unreachable: {repo_url}: {err_first_line}")
 
