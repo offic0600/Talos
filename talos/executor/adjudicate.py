@@ -597,6 +597,20 @@ def adjudicate(
     Verdict: error (checker_error) > unmet (problems) > degraded (defects) > pass.
     """
     t0 = time.time()
+
+    # Test hook for M18/M24: inject sleep to verify sentinel survives adjudication
+    _adj_sleep = os.environ.get("TALOS_ADJ_SLEEP")
+    if _adj_sleep:
+        try:
+            sleep_s = int(_adj_sleep)
+            log_event("adjudicate_sleep_start", task_id=task_id, run_id=run_id,
+                      extra={"sleep_s": sleep_s})
+            time.sleep(sleep_s)
+            log_event("adjudicate_sleep_end", task_id=task_id, run_id=run_id,
+                      extra={"sleep_s": sleep_s})
+        except ValueError:
+            pass
+
     problems: list[str] = []
     defects: list[str] = []
     checker_error: Optional[str] = None
