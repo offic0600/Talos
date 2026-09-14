@@ -425,6 +425,44 @@ def _self_check(
         print(f"[talos-executor] hint: run deploy/install-skills.sh to sync skills to {home_skills}")
         sys.exit(1)
 
+    # ── (6) Container config renderable — HARD FAIL (v2.3 P0 fix) ───
+    # Verifies that all TALOS_MODEL_* env vars are present and the
+    # template renders to a valid config.yaml containing model/provider.
+    try:
+        import tempfile
+        from talos.executor.spawn import _generate_container_config
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tdir = Path(tmpdir)
+            # _generate_container_config only needs tdir and a task-like object
+            # (task is unused in the function body)
+            cfg_path = _generate_container_config(tdir, task=None)
+            content = cfg_path.read_text(encoding="utf-8")
+            # Verify key fields are present (model, provider, base_url)
+            has_model = "model:" in content and "default:" in content
+            has_provider = "provider:" in content
+            has_base_url = "base_url:" in content
+            if not (has_model and has_provider and has_base_url):
+                print(
+                    f"[talos-executor] self-check (6/6) config render: FAIL — "
+                    f"rendered config missing model/provider/base_url"
+                )
+                sys.exit(1)
+            # Print model info (no key values — key_env is just a var name)
+            model = os.environ.get("TALOS_MODEL", "?")
+            provider = os.environ.get("TALOS_MODEL_PROVIDER", "?")
+            base_url = os.environ.get("TALOS_MODEL_BASE_URL", "?")
+            print(
+                f"[talos-executor] self-check (6/6) config render: OK "
+                f"(model={model}, provider={provider}, base_url={base_url})"
+            )
+    except RuntimeError as e:
+        print(f"[talos-executor] self-check (6/6) config render: FAIL — {e}")
+        print("[talos-executor] hint: set TALOS_MODEL/TALOS_MODEL_PROVIDER/TALOS_MODEL_BASE_URL/TALOS_MODEL_KEY_ENV in ~/.hermes/talos.env")
+        sys.exit(1)
+    except Exception as e:
+        print(f"[talos-executor] self-check (6/6) config render: FAIL — {e}")
+        sys.exit(1)
+
 
 def run_executor(
     *,

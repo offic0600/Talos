@@ -474,3 +474,52 @@ class TestExecutorAliveFile:
             assert _executor_is_alive() is False
         finally:
             constants.TALOS_HOME = old
+
+
+class TestContainerConfigTemplate:
+    """v2.3 P0: _generate_container_config reads template + env vars."""
+
+    _REQUIRED_ENV = {
+        "TALOS_MODEL": "GLM-5",
+        "TALOS_MODEL_PROVIDER": "custom:mgallery",
+        "TALOS_MODEL_PROVIDER_NAME": "mgallery",
+        "TALOS_MODEL_BASE_URL": "https://inference.example.com/v1",
+        "TALOS_MODEL_KEY_ENV": "API_SERVER_KEY",
+    }
+
+    def test_renders_correctly(self, tmp_path, monkeypatch):
+        """Template renders with all env vars present — contains model/provider/base_url."""
+        for k, v in self._REQUIRED_ENV.items():
+            monkeypatch.setenv(k, v)
+        from talos.executor.spawn import _generate_container_config
+        cfg = _generate_container_config(tmp_path, task=None)
+        content = cfg.read_text(encoding="utf-8")
+        assert "model:" in content
+        assert "default: GLM-5" in content
+        assert "provider: custom:mgallery" in content
+        assert "base_url: https://inference.example.com/v1" in content
+        assert "key_env: API_SERVER_KEY" in content
+        assert "talos-plugins" in content
+
+    def test_missing_env_var_raises(self, tmp_path, monkeypatch):
+        """Missing TALOS_MODEL_* env var → RuntimeError."""
+        for k, v in self._REQUIRED_ENV.items():
+            monkeypatch.setenv(k, v)
+        monkeypatch.delenv("TALOS_MODEL_BASE_URL")
+        from talos.executor.spawn import _generate_container_config
+        import pytest
+        with pytest.raises(RuntimeError, match="TALOS_MODEL_BASE_URL"):
+            _generate_container_config(tmp_path, task=None)
+
+    def test_no_api_key_value_in_output(self, tmp_path, monkeypatch):
+        """Rendered config must NOT contain the actual API key value."""
+        for k, v in self._REQUIRED_ENV.items():
+            monkeypatch.setenv(k, v)
+        # Also set the actual key value in env — it must NOT appear in config.yaml
+        monkeypatch.setenv("API_SERVER_KEY", "glpat-super-secret-key-12345")
+        from talos.executor.spawn import _generate_container_config
+        cfg = _generate_container_config(tmp_path, task=None)
+        content = cfg.read_text(encoding="utf-8")
+        assert "glpat-super-secret-key-12345" not in content
+        # key_env should only contain the env var *name*, not the value
+        assert "key_env: API_SERVER_KEY" in content

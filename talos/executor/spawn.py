@@ -126,36 +126,63 @@ def _build_context_md(task: Any, decl: Declaration) -> str:
 def _generate_container_config(tdir: Path, task: Any) -> Path:
     """Generate a managed config.yaml for the worker container (v2.3 §18.2 #1).
 
+    Reads ``deploy/container-config.template.yaml`` from the Talos repo and
+    substitutes ``${TALOS_*}`` placeholders from the executor's environment.
+
     The generated config:
       - Enables talos-plugins (path_protect, skill_protect, trace_collect)
       - Sets hooks_auto_accept: true (无人值守审批)
       - Sets dialog_policy: auto_accept
+      - Contains model/provider config (no secrets — key_env is an env var *name*)
       - Contains NO host API keys or secrets (those are injected via env vars)
 
     Returns the path to the generated config file.
+
+    Raises:
+        RuntimeError: if any required ``TALOS_MODEL_*`` env var is missing.
     """
     config_path = tdir / "config.yaml"
-    config_content = """\
-# Managed by Talos executor — do not edit (v2.3 §18.2 #1)
-# This config is generated per-task and contains no host secrets.
-plugins:
-  enabled:
-    - talos-plugins
-hooks_auto_accept: true
-agent:
-  dialog_policy: auto_accept
-  max_turns: 90
-  tool_use_enforcement: auto
-  verify_on_stop: false
-terminal:
-  backend: local
-  timeout: 180
-toolsets:
-  - hermes-cli
-kanban:
-  dispatch_in_gateway: false
-"""
-    config_path.write_text(config_content, encoding="utf-8")
+
+    # Locate the template relative to this file (spawn.py → executor/ → talos/ → repo root)
+    template_path = Path(__file__).resolve().parent.parent.parent / "deploy" / "container-config.template.yaml"
+    if not template_path.is_file():
+        raise RuntimeError(
+            f"container-config.template.yaml not found at {template_path}"
+        )
+
+    template = template_path.read_text(encoding="utf-8")
+
+    # Required env vars — all must be present to render a valid config.
+    # TALOS_MODEL_KEY_ENV is the *name* of the env var holding the key,
+    # not the key value itself, so it is safe to write into config.yaml.
+    required_vars = [
+        "TALOS_MODEL",
+        "TALOS_MODEL_PROVIDER",
+        "TALOS_MODEL_PROVIDER_NAME",
+        "TALOS_MODEL_BASE_URL",
+        "TALOS_MODEL_KEY_ENV",
+    ]
+    substitutions: dict[str, str] = {}
+    missing: list[str] = []
+    for var in required_vars:
+        val = os.environ.get(var)
+        if not val:
+            missing.append(var)
+        else:
+            substitutions[var] = val
+
+    if missing:
+        raise RuntimeError(
+            f"Cannot render container config: missing env vars: {missing}. "
+            f"Set them in ~/.hermes/talos.env (see deploy/talos.env.template)."
+        )
+
+    # Simple ${VAR} substitution — no shell expansion, no format-string injection.
+    rendered = template
+    for var, val in substitutions.items():
+        rendered = rendered.replace(f"${{{var}}}", val)
+
+    config_path.write_text(rendered, encoding="utf-8")
     return config_path
 
 
