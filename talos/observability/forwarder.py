@@ -108,6 +108,10 @@ def _index_name(rec: dict) -> str:
     """
     ts = rec.get("timestamp") or rec.get("ts")
     if isinstance(ts, (int, float)):
+        # trace_collect writes milliseconds (int(time.time() * 1000));
+        # values > 1e12 are unambiguously milliseconds.
+        if ts > 1e12:
+            ts = ts / 1000
         dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     elif isinstance(ts, str) and ts:
         try:
@@ -132,8 +136,12 @@ def _to_envelope(rec: dict) -> dict:
 
     保留原始记录的完整内容在 ``raw`` 字段里（不索引）。
     """
-    raw_ts = rec.get("ts")
+    raw_ts = rec.get("timestamp") or rec.get("ts")
     if isinstance(raw_ts, (int, float)):
+        # trace_collect writes milliseconds (int(time.time() * 1000));
+        # values > 1e12 are unambiguously milliseconds.
+        if raw_ts > 1e12:
+            raw_ts = raw_ts / 1000
         timestamp = raw_ts
     elif isinstance(raw_ts, str):
         try:
@@ -165,6 +173,7 @@ def _to_envelope(rec: dict) -> dict:
         "raw": rec,
         # 辅助字段（也在 template 里有映射）
         "delivery_id": rec.get("delivery_id") or "",
+        "api_request_id": rec.get("api_request_id") or "",
         "kind": rec.get("kind") or "",
         "session_id": rec.get("session_id") or "",
         "tenant": rec.get("tenant") or "",
@@ -192,7 +201,10 @@ def _bulk(lines: list[dict]) -> bool:
     for rec in lines:
         envelope = _to_envelope(rec)
         idx = _index_name(rec)
-        did = envelope.get("delivery_id") or envelope.get("task_id") or ""
+        did = (envelope.get("delivery_id")
+               or envelope.get("api_request_id")
+               or envelope.get("task_id")
+               or "")
         body.append(json.dumps({"index": {"_index": idx, "_id": did}}))
         body.append(json.dumps(envelope, ensure_ascii=False))
     payload = ("\n".join(body) + "\n").encode()
