@@ -26,7 +26,7 @@ cat > "$PLIST_DST" <<EOF
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/env</string>
-        <string>PYTHONPATH=${HERMES_HOME:-$HOME/.hermes}/hermes-agent</string>
+        <string>PYTHONPATH=$(cd "$(dirname "$0")/.." && pwd):${HERMES_HOME:-$HOME/.hermes}/hermes-agent</string>
         <string>TALOS_HOME=${TALOS_HOME:-$HOME/.hermes/talos}</string>
         <string>TALOS_WORKER_IMAGE=${TALOS_WORKER_IMAGE:-hermes-worker:latest}</string>
         <string>TALOS_GITLAB_URL=${TALOS_GITLAB_URL:-https://hgit.haier.net}</string>
