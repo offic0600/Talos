@@ -647,3 +647,88 @@ class TestDispatchSafety:
             f"stdout: {result.stdout[:500]}\n"
             f"stderr: {result.stderr[:500]}"
         )
+
+    def test_tick_log_written_when_nothing_dispatched(self, conn, make_task):
+        """tick() must write a 'tick' event to executor.jsonl even when
+        dispatch_once returns an empty result (no tasks spawned).
+
+        This is a behavior test: it calls tick() on a temp DB with no
+        ready tasks, then reads executor.jsonl and verifies a tick event
+        exists with the expected fields.
+        """
+        import json
+        import tempfile
+        from unittest.mock import MagicMock
+        from talos.executor import constants as const_mod
+        from talos.executor.loop import tick
+
+        # Point log_event at a temp file so we can read it back
+        from pathlib import Path
+        old_log = const_mod.EXECUTOR_LOG
+        tmpdir = tempfile.mkdtemp()
+        tmp_log = Path(tmpdir) / "executor.jsonl"
+        const_mod.EXECUTOR_LOG = tmp_log
+
+        # Patch dispatch_once to return an empty result
+        import hermes_cli.kanban_db_dispatch
+        original = hermes_cli.kanban_db_dispatch.dispatch_once
+
+        def fake_dispatch_once(c, **kwargs):
+            result = MagicMock()
+            result.spawned = []
+            result.skipped_locked = False
+            result.memory_pressure = None
+            result.respawn_guarded = []
+            result.rate_limited = []
+            result.skipped_unassigned = []
+            result.skipped_nonspawnable = []
+            result.skipped_per_profile_capped = []
+            result.crashed = []
+            result.auto_blocked = []
+            result.timed_out = []
+            result.stale = []
+            return result
+
+        hermes_cli.kanban_db_dispatch.dispatch_once = fake_dispatch_once
+
+        # Also patch reap/list functions to avoid docker dependency
+        with patch("talos.executor.loop.reap_orphans"), \
+             patch("talos.executor.loop._adjudicate_exited"), \
+             patch("talos.executor.loop._heartbeat_live_containers"), \
+             patch("talos.executor.loop.list_running_containers", return_value=[]):
+            try:
+                tick(conn, spawn_fn=MagicMock())
+            finally:
+                hermes_cli.kanban_db_dispatch.dispatch_once = original
+                const_mod.EXECUTOR_LOG = old_log
+
+        # Read the temp log and find a tick event
+        events = []
+        with open(str(tmp_log)) as f:
+            for line in f:
+                try:
+                    events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+
+        import shutil
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+        tick_events = [e for e in events if e.get("kind") == "tick"]
+        assert len(tick_events) >= 1, (
+            f"No 'tick' event written when dispatch returned empty! "
+            f"Events: {[e.get('kind') for e in events]}"
+        )
+
+        te = tick_events[-1]
+        # log_event nests kwargs into an 'extra' sub-dict
+        fields = te.get("extra", te)
+        assert "ready" in fields, f"tick event missing 'ready' field: {te}"
+        assert "spawned" in fields, f"tick event missing 'spawned' field: {te}"
+        assert "active_containers" in fields, (
+            f"tick event missing 'active_containers' field: {te}"
+        )
+        assert fields["spawned"] == 0, (
+            f"Expected spawned=0, got {fields['spawned']}"
+        )
+        assert "reason" in fields, f"tick event missing 'reason' field: {te}"

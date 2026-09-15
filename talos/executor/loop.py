@@ -246,13 +246,39 @@ def _adjudicate_exited(conn: Any) -> None:
         reap(task_id, run_id)
 
 
-def _dispatch(conn: Any, spawn_fn: Any) -> None:
+def _dispatch(conn: Any, spawn_fn: Any) -> dict:
     """Call ``dispatch_once`` to claim and spawn ready tasks (§3).
 
     使用模块级 ``DEFAULT_FAILURE_LIMIT``，不在函数内重复导入
     造成 shadowing（v2.1 FIX #10）。
+
+    Returns a summary dict for tick-level logging.
     """
     from hermes_cli.kanban_db_dispatch import dispatch_once
+
+    t0 = time.time()
+    summary: dict[str, Any] = {
+        "spawned_count": 0,
+        "ready_before": 0,
+        "active_containers": 0,
+        "dispatch_ms": 0.0,
+        "reason": None,
+    }
+
+    # Count ready tasks before dispatch
+    try:
+        row = conn.execute(
+            "SELECT count(*) FROM tasks WHERE status='ready'"
+        ).fetchone()
+        summary["ready_before"] = row[0]
+    except Exception:
+        pass
+
+    # Count active hermes-worker containers
+    try:
+        summary["active_containers"] = len(list_running_containers())
+    except Exception:
+        pass
 
     try:
         result = dispatch_once(
@@ -261,12 +287,56 @@ def _dispatch(conn: Any, spawn_fn: Any) -> None:
             failure_limit=DEFAULT_FAILURE_LIMIT,
             max_spawn=TALOS_MAX_SPAWN,
         )
+        summary["spawned_count"] = len(result.spawned)
+        summary["dispatch_ms"] = round((time.time() - t0) * 1000, 1)
+
+        # Capture skip reasons from DispatchResult fields
+        reasons: list[str] = []
+        if result.skipped_locked:
+            reasons.append("board_locked")
+        if result.memory_pressure:
+            reasons.append(f"memory_pressure={result.memory_pressure}")
+        if result.respawn_guarded:
+            reasons.append(
+                f"respawn_guarded={len(result.respawn_guarded)}"
+            )
+            for tid, reason in result.respawn_guarded:
+                log_event("dispatched", task_id=tid,
+                          extra={"skipped": "respawn_guard", "reason": reason})
+        if result.rate_limited:
+            reasons.append(f"rate_limited={len(result.rate_limited)}")
+        if result.skipped_unassigned:
+            reasons.append(f"unassigned={len(result.skipped_unassigned)}")
+        if result.skipped_nonspawnable:
+            reasons.append(
+                f"nonspawnable={len(result.skipped_nonspawnable)}"
+            )
+        if result.skipped_per_profile_capped:
+            reasons.append(
+                f"per_profile_capped={len(result.skipped_per_profile_capped)}"
+            )
+        if result.crashed:
+            reasons.append(f"crashed={len(result.crashed)}")
+        if result.auto_blocked:
+            reasons.append(f"auto_blocked={len(result.auto_blocked)}")
+        if result.timed_out:
+            reasons.append(f"timed_out={len(result.timed_out)}")
+        if result.stale:
+            reasons.append(f"stale={len(result.stale)}")
+        if not result.spawned and not reasons:
+            reasons.append("no_ready_or_all_skipped")
+        summary["reason"] = ",".join(reasons) if reasons else None
+
         if result.spawned:
             for task_id, assignee, workspace in result.spawned:
                 log_event("dispatched", task_id=task_id,
                           extra={"assignee": assignee})
     except Exception as e:
+        summary["dispatch_ms"] = round((time.time() - t0) * 1000, 1)
+        summary["reason"] = f"exception: {e}"
         log_event("error", msg=f"dispatch_once failed: {e}")
+
+    return summary
 
 
 def tick(conn: Any, spawn_fn: Optional[Any] = None) -> None:
@@ -292,10 +362,17 @@ def tick(conn: Any, spawn_fn: Optional[Any] = None) -> None:
     reap_orphans()
 
     # 4. Dispatch new ready tasks
-    _dispatch(conn, spawn_fn)
+    dispatch_summary = _dispatch(conn, spawn_fn)
 
-    log_event("heartbeat", duration_ms=(time.time() - t0) * 1000,
-              extra={"tick": True})
+    # 5. Tick-level log: always written, even when nothing dispatched
+    elapsed_ms = (time.time() - t0) * 1000
+    log_event("tick", duration_ms=round(elapsed_ms, 1), extra={
+        "ready": dispatch_summary["ready_before"],
+        "active_containers": dispatch_summary["active_containers"],
+        "spawned": dispatch_summary["spawned_count"],
+        "dispatch_ms": dispatch_summary["dispatch_ms"],
+        "reason": dispatch_summary["reason"],
+    })
 
 
 def _self_check(
