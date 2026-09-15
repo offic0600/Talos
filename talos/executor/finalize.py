@@ -67,6 +67,22 @@ def _format_comment(verdict: Verdict, task_id: str, run_id: int) -> str:
     return f"[执行器] 裁决(run {run_id}): {verdict.status}"
 
 
+def _format_blocked_comment(verdict: Verdict, task_id: str, run_id: int,
+                             failure_limit: int) -> str:
+    """P1-1: Format the '转人工' comment when a task hits the failure limit.
+
+    Written as a SEPARATE comment after the verdict comment, because
+    ``_format_comment`` only looks at ``verdict.status`` (always 'unmet'
+    for both requeue and block), not the resulting ``new_status``.
+    """
+    parts = [f"[执行器] 连续 {failure_limit} 次未满足契约，转人工处理"]
+    if verdict.problems:
+        parts.append("缺项清单: " + "; ".join(verdict.problems[:10]))
+    if verdict.defects:
+        parts.append("缺陷: " + "; ".join(verdict.defects[:5]))
+    return "\n".join(parts)
+
+
 def _create_subtasks(conn: Any, task_id: str, verdict: Verdict) -> None:
     """Create subtasks declared in result.json (§3 interface signatures)."""
     if not verdict.subtasks:
@@ -291,6 +307,16 @@ def finalize(
             kb.add_comment(conn, task_id, author=EXECUTOR_AUTHOR, body=comment)
         except Exception as e:
             log_event("error", task_id=task_id, run_id=run_id, msg=f"add_comment failed: {e}")
+
+        # P1-1: 任务落成 blocked 后追加「转人工」评论。
+        # _format_comment 只看 verdict.status（unmet），不区分回 ready 还是转 blocked。
+        # 这里在 new_status 确定后追加一条单独评论。
+        if new_status == "blocked":
+            blocked_comment = _format_blocked_comment(verdict, task_id, run_id, failure_limit)
+            try:
+                kb.add_comment(conn, task_id, author=EXECUTOR_AUTHOR, body=blocked_comment)
+            except Exception as e:
+                log_event("error", task_id=task_id, run_id=run_id, msg=f"blocked comment failed: {e}")
     else:
         # 内核 API 返回 False → 记 error，不写裁决评论，检查内核回收
         log_event("error", task_id=task_id, run_id=run_id,

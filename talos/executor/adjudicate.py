@@ -153,10 +153,15 @@ def check_git_pushed(decl: Declaration, bundle: CollectedBundle) -> tuple[list[s
         return problems, defects
 
     branch = decl.git.branch
+    project_id = _project_id_from_url(repo_url)
+    if not project_id:
+        defects.append(f"无法从 URL 解析项目: {repo_url}")
+        return problems, defects
+
     try:
-        remote_sha = _ls_remote(repo_url, branch)
+        remote_sha = _gitlab_branch_sha(project_id, branch)
     except RuntimeError:
-        # Repo unreachable → defect
+        # API unreachable/auth failure → defect (degraded), NOT "branch not found"
         defects.append(f"仓库不可达: {repo_url}")
         return problems, defects
 
@@ -231,8 +236,12 @@ def check_deliverables(decl: Declaration, bundle: CollectedBundle) -> tuple[list
 
     for dl in decl.deliverables:
         if dl.kind == "git_branch":
+            project_id = _project_id_from_url(dl.repo)
+            if not project_id:
+                defects.append(f"交付仓库无法解析项目: {dl.repo}")
+                continue
             try:
-                remote_sha = _ls_remote(dl.repo, dl.branch)
+                remote_sha = _gitlab_branch_sha(project_id, dl.branch)
             except RuntimeError:
                 defects.append(f"交付仓库不可达: {dl.repo}")
                 continue
@@ -292,16 +301,16 @@ def _check_ci(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], li
         return problems, defects
 
     branch = decl.git.branch
-    # I11: sha from ls-remote (authoritative), NOT self-reported from result.json
-    try:
-        sha = _ls_remote(repo_url, branch)
-    except RuntimeError:
-        defects.append(f"CI 验证: 仓库不可达: {repo_url}")
-        return problems, defects
-
+    # P0-1: sha from GitLab API (authoritative), NOT ls-remote, NOT self-reported
     project_id = _project_id_from_url(repo_url)
     if not project_id:
         defects.append(f"无法从 URL 解析项目: {repo_url}")
+        return problems, defects
+
+    try:
+        sha = _gitlab_branch_sha(project_id, branch)
+    except RuntimeError:
+        defects.append(f"CI 验证: 仓库不可达: {repo_url}")
         return problems, defects
 
     # Step 1: check if .gitlab-ci.yml exists on this branch
@@ -475,15 +484,51 @@ def _get_self_reported_sha(bundle: CollectedBundle, branch: str) -> Optional[str
     return None
 
 
+def _gitlab_branch_sha(project_id: str, branch: str) -> Optional[str]:
+    """Query GitLab API for the commit SHA of *branch* (P0-1).
+
+    Uses ``GET /projects/:id/repository/branches/:branch`` — the same API
+    channel already used for pipeline checks, no second credential path.
+
+    Returns:
+        sha string — branch exists, API returned 200.
+        None — branch doesn't exist (HTTP 404 → problem, requeue).
+
+    Raises:
+        RuntimeError — API unreachable or auth failure (HTTP 401/5xx/timeout
+        → defect, degraded).  Auth failure must NEVER be treated as
+        "branch not found".
+    """
+    if not GITLAB_ADMIN_TOKEN:
+        raise RuntimeError("GitLab token not configured (TALOS_GITLAB_ADMIN_TOKEN)")
+
+    import urllib.parse
+    encoded_branch = urllib.parse.quote(branch, safe="")
+    url = (
+        f"{GITLAB_URL}/api/v4/projects/{project_id}"
+        f"/repository/branches/{encoded_branch}"
+    )
+    req = Request(url)
+    req.add_header("PRIVATE-TOKEN", GITLAB_ADMIN_TOKEN)
+    try:
+        with urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+            return data.get("commit", {}).get("id")
+    except HTTPError as e:
+        if e.code == 404:
+            return None
+        # 401/403/5xx → API error, NOT "branch not found"
+        raise RuntimeError(f"GitLab API error {e.code} for branch={branch}")
+    except Exception as e:
+        raise RuntimeError(f"GitLab API unreachable: {e}")
+
+
 def _ls_remote(repo_url: str, branch: str) -> Optional[str]:
-    """``git ls-remote --exit-code <repo> refs/heads/<branch>`` → sha or None.
+    """[DEPRECATED] ``git ls-remote`` — kept for backward-compat with tests.
 
-    Returns the sha if the branch exists, ``None`` if the branch doesn't
-    exist (exit code 2), and raises ``RuntimeError`` if the repo is
-    unreachable (any other non-zero exit).
-
-    使用 --exit-code 区分分支不存在（exit 2）与仓库不可达（其它非零）
-    （v2.1 FIX #7）。
+    P0-1: replaced by ``_gitlab_branch_sha`` which uses the GitLab API.
+    Calling sites now use ``_gitlab_branch_sha`` to avoid credential
+    leakage via process arguments.
     """
     try:
         result = subprocess.run(
@@ -496,25 +541,21 @@ def _ls_remote(repo_url: str, branch: str) -> Optional[str]:
     if result.returncode == 0:
         output = result.stdout.strip()
         if not output:
-            # exit 0 但无输出，视为分支不存在
             return None
-        # Output format: "<sha>\trefs/heads/<branch>"
         parts = output.split("\t")
         if len(parts) >= 1 and parts[0]:
             return parts[0].strip()
         return None
 
     if result.returncode == 2:
-        # exit code 2 = 分支不存在（v2.1 FIX #7）
         return None
 
-    # 其它非零退出 = 仓库不可达，抛异常（v2.1 FIX #7）
     err_first_line = result.stderr.strip().split("\n")[0] if result.stderr.strip() else "unknown error"
     raise RuntimeError(f"repo unreachable: {repo_url}: {err_first_line}")
 
 
 def _repo_reachable(repo_url: str) -> bool:
-    """Check if the repo URL is reachable (for distinguishing problem vs defect)."""
+    """[DEPRECATED] Check if the repo URL is reachable (for problem vs defect)."""
     try:
         result = subprocess.run(
             ["git", "ls-remote", repo_url, "HEAD"],
@@ -675,13 +716,43 @@ def adjudicate(
     else:
         status = "pass"
 
+    # P0-2: filter artifacts to only verified git_branch entries.
+    # 容器在 result.json 里自报的 git_branch 可能根本不存在于远端。
+    # 评论和 verdict 只保留裁决器通过 GitLab API 确认过的制品。
+    verified_artifacts = []
+    for art in artifacts:
+        if not isinstance(art, dict):
+            continue
+        if art.get("kind") == "git_branch":
+            # Only include if check_git_pushed / check_deliverables verified it.
+            # A git_branch artifact is verified when:
+            # 1. require_push=True AND no "分支不存在" / "sha 不匹配" problem for that branch
+            # 2. The branch was confirmed via GitLab API (no defect about repo unreachable)
+            branch = art.get("branch", "")
+            repo = art.get("repo", "")
+            # Check if any problem or defect mentions this branch as missing/mismatched
+            branch_issues = [
+                p for p in problems if branch in p and ("不存在" in p or "不匹配" in p or "不符" in p)
+            ] + [
+                d for d in defects if repo in d and "不可达" in d
+            ]
+            if branch_issues:
+                continue  # Skip unverified artifact
+            # Also skip if require_push=False (not verified by any check)
+            if not decl.git.require_push:
+                continue
+            verified_artifacts.append(art)
+        else:
+            # Non-git_branch artifacts (file, etc.) — pass through, not in comment
+            verified_artifacts.append(art)
+
     verdict = Verdict(
         status=status,
         problems=problems,
         defects=defects,
         result_status=result_status,
         summary=summary,
-        artifacts=artifacts,
+        artifacts=verified_artifacts,
         subtasks=subtasks,
         request_review=request_review,
         comments=comments,

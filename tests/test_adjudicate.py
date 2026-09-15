@@ -137,7 +137,7 @@ class TestAdjudicatePass:
             deliverables=[DeliverableSpec(kind="git_branch", repo="https://gitlab.example.com/test/repo.git", branch="talos/t_test")],
         )
 
-        with patch("talos.executor.adjudicate._ls_remote", return_value="abc123"), \
+        with patch("talos.executor.adjudicate._gitlab_branch_sha", return_value="abc123"), \
              patch("talos.executor.adjudicate._repo_reachable", return_value=True), \
              patch("talos.executor.adjudicate._check_ci") as mock_ci:
             mock_ci.return_value = ([], [])  # no problems, no defects
@@ -183,7 +183,7 @@ class TestAdjudicateDegraded:
             deliverables=[DeliverableSpec(kind="git_branch", repo="https://gitlab.example.com/test/repo.git", branch="talos/t_test")],
         )
 
-        with patch("talos.executor.adjudicate._ls_remote", return_value="abc123"), \
+        with patch("talos.executor.adjudicate._gitlab_branch_sha", return_value="abc123"), \
              patch("talos.executor.adjudicate._repo_reachable", return_value=True), \
              patch("talos.executor.adjudicate._check_ci") as mock_ci:
             mock_ci.return_value = ([], ["流水线超时: 900s 内未出终态 branch=talos/t_test"])
@@ -313,7 +313,7 @@ class TestAdjudicateUnmet:
             deliverables=[DeliverableSpec(kind="git_branch", repo="https://gitlab.example.com/test/repo.git", branch="talos/t_test")],
         )
 
-        with patch("talos.executor.adjudicate._ls_remote", return_value=None), \
+        with patch("talos.executor.adjudicate._gitlab_branch_sha", return_value=None), \
              patch("talos.executor.adjudicate._repo_reachable", return_value=True):
             verdict = adjudicate("t_test", 1, bundle, decl)
 
@@ -352,7 +352,7 @@ class TestAdjudicateUnmet:
             deliverables=[DeliverableSpec(kind="git_branch", repo="https://gitlab.example.com/test/repo.git", branch="talos/t_test")],
         )
 
-        with patch("talos.executor.adjudicate._ls_remote", return_value="realsha"), \
+        with patch("talos.executor.adjudicate._gitlab_branch_sha", return_value="realsha"), \
              patch("talos.executor.adjudicate._repo_reachable", return_value=True):
             verdict = adjudicate("t_test", 1, bundle, decl)
 
@@ -391,7 +391,7 @@ class TestAdjudicateUnmet:
             deliverables=[DeliverableSpec(kind="git_branch", repo="https://gitlab.example.com/test/repo.git", branch="talos/t_test")],
         )
 
-        with patch("talos.executor.adjudicate._ls_remote", return_value="abc123"), \
+        with patch("talos.executor.adjudicate._gitlab_branch_sha", return_value="abc123"), \
              patch("talos.executor.adjudicate._repo_reachable", return_value=True), \
              patch("talos.executor.adjudicate._check_ci") as mock_ci:
             mock_ci.return_value = (["流水线 failed: #42 branch=talos/t_test"], [])
@@ -879,7 +879,7 @@ class TestCheckCiFileDetection:
 
         with patch("talos.executor.adjudicate._gitlab_ci_file_exists", return_value=False), \
              patch("talos.executor.adjudicate._gitlab_pipelines") as mock_pipelines, \
-             patch("talos.executor.adjudicate._ls_remote", return_value="abc123"), \
+             patch("talos.executor.adjudicate._gitlab_branch_sha", return_value="abc123"), \
              patch("talos.executor.adjudicate._repo_reachable", return_value=True):
             t0 = _time.time()
             problems, defects = _check_ci(decl, bundle)
@@ -931,7 +931,7 @@ class TestCheckCiPipelineAppearWindow:
 
         with patch("talos.executor.adjudicate._gitlab_ci_file_exists", return_value=True), \
              patch("talos.executor.adjudicate._gitlab_pipelines", side_effect=mock_pipelines), \
-             patch("talos.executor.adjudicate._ls_remote", return_value="abc123"), \
+             patch("talos.executor.adjudicate._gitlab_branch_sha", return_value="abc123"), \
              patch("talos.executor.adjudicate.time.sleep") as mock_sleep:
             problems, defects = _check_ci(decl, bundle)
 

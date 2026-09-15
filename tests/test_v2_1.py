@@ -28,6 +28,7 @@ from talos.executor.adjudicate import (
     Verdict,
     adjudicate,
     _ls_remote,
+    _gitlab_branch_sha,
     _get_injected_repo,
     check_git_pushed,
 )
@@ -181,7 +182,7 @@ class TestBindingMismatchProblem:
             ],
         )
 
-        with patch("talos.executor.adjudicate._ls_remote", return_value="abc123"):
+        with patch("talos.executor.adjudicate._gitlab_branch_sha", return_value="abc123"):
             verdict = adjudicate("t_test", 1, bundle, decl)
 
         assert verdict.status == "unmet"
@@ -732,3 +733,267 @@ class TestDispatchSafety:
             f"Expected spawned=0, got {fields['spawned']}"
         )
         assert "reason" in fields, f"tick event missing 'reason' field: {te}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# P0-2: 评论不得包含未经验证的制品位置
+# ═══════════════════════════════════════════════════════════════
+
+class TestUnverifiedArtifactNotInComment:
+    """P0-2: 容器自报的 git_branch 未经验证 → 评论里不出现该分支。
+
+    容器在 result.json 里编一个 git_branch，执行器不应把它写进看板评论，
+    因为那个分支可能根本不存在。评论里出现的任何制品位置，必须来自裁决器
+    验证过的事实。
+    """
+
+    def test_unverified_git_branch_excluded_from_comment(self, tmp_path):
+        """require_push=false 时，result.json 自报的 git_branch 不出现在评论里。"""
+        from talos.executor.finalize import _format_comment
+
+        # Worker self-reported a git_branch that doesn't exist on remote
+        verdict = Verdict(
+            status="pass",
+            summary="Done",
+            artifacts=[
+                {
+                    "kind": "git_branch",
+                    "repo": "https://hgit.example.com/group/repo.git",
+                    "branch": "talos/fake_branch",
+                    "sha": "abc123def456",
+                }
+            ],
+        )
+
+        # Simulate adjudicate()'s artifact filtering for require_push=False:
+        # The git_branch artifact should be filtered out.
+        # In adjudicate(), verified_artifacts would be empty because
+        # require_push=False means no git check was run.
+        # So verdict.artifacts would not contain the git_branch.
+        verdict.artifacts = []  # Simulate post-filtering
+
+        comment = _format_comment(verdict, "t_test", 1)
+        assert "talos/fake_branch" not in comment, (
+            f"Unverified branch appeared in comment: {comment}"
+        )
+        assert "abc123" not in comment, (
+            f"Unverified SHA appeared in comment: {comment}"
+        )
+
+    def test_adjudicate_filters_unverified_branch_when_require_push_false(self, tmp_path):
+        """Full adjudicate() flow: require_push=false → git_branch filtered from verdict.artifacts."""
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        # Create the artifact file so check_artifacts passes
+        artifact_file = ws / "src" / "feature.py"
+        artifact_file.parent.mkdir(parents=True)
+        artifact_file.write_text("def feature():\n    return 'hello'\\n")
+
+        bundle = make_bundle(
+            tmp_path,
+            result_json={
+                "schema": 1,
+                "status": "done",
+                "summary": "Created files",
+                "artifacts": [
+                    {
+                        "kind": "git_branch",
+                        "repo": "https://hgit.example.com/group/repo.git",
+                        "branch": "talos/fake_branch",
+                        "sha": "abc123def456",
+                    }
+                ],
+            },
+            workspace_path=ws,
+        )
+
+        # require_push=False → check_git_pushed skips, no git verification
+        decl = make_decl(
+            artifacts=[ArtifactSpec(path="/work/src/feature.py", min_bytes=10)],
+            git=GitSpec(branch="talos/fake_branch", require_push=False),
+            verification=VerificationSpec(required=False, source="none"),
+        )
+
+        verdict = adjudicate("t_test", 1, bundle, decl)
+
+        # Verdict should be pass
+        assert verdict.status == "pass", f"Expected pass, got {verdict.status}"
+
+        # The git_branch artifact must NOT be in verdict.artifacts
+        git_branch_arts = [
+            a for a in verdict.artifacts
+            if isinstance(a, dict) and a.get("kind") == "git_branch"
+        ]
+        assert len(git_branch_arts) == 0, (
+            f"Unverified git_branch artifact leaked into verdict: {git_branch_arts}"
+        )
+
+        # Comment should not contain the fake branch
+        from talos.executor.finalize import _format_comment
+        comment = _format_comment(verdict, "t_test", 1)
+        assert "talos/fake_branch" not in comment, (
+            f"Unverified branch in comment: {comment}"
+        )
+
+    def test_verified_branch_appears_in_comment(self, tmp_path):
+        """require_push=true + branch verified via API → branch appears in comment."""
+        from talos.executor.finalize import _format_comment
+
+        verdict = Verdict(
+            status="pass",
+            summary="Done",
+            artifacts=[
+                {
+                    "kind": "git_branch",
+                    "repo": "https://hgit.example.com/group/repo.git",
+                    "branch": "talos/verified_branch",
+                    "sha": "abc123def456",
+                }
+            ],
+        )
+
+        comment = _format_comment(verdict, "t_test", 1)
+        assert "talos/verified_branch" in comment, (
+            f"Verified branch missing from comment: {comment}"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════
+# P0-1: GitLab API 替代 ls-remote
+# ═══════════════════════════════════════════════════════════════
+
+class TestGitLabBranchSha:
+    """P0-1: _gitlab_branch_sha uses GitLab API, not git ls-remote."""
+
+    def test_branch_exists_returns_sha(self):
+        """API returns 200 with commit.id → sha string."""
+        from unittest.mock import MagicMock, patch
+        from urllib.error import HTTPError
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "name": "talos/test",
+            "commit": {"id": "abc123def456789"},
+        }).encode()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("talos.executor.adjudicate.GITLAB_ADMIN_TOKEN", "fake-token"), \
+             patch("talos.executor.adjudicate.urlopen", return_value=mock_resp):
+            result = _gitlab_branch_sha("123", "talos/test")
+
+        assert result == "abc123def456789"
+
+    def test_branch_not_found_returns_none(self):
+        """API returns 404 → None (problem, requeue)."""
+        from unittest.mock import patch
+        from urllib.error import HTTPError
+        import io
+
+        mock_error = HTTPError(
+            url="https://hgit.example.com/api/v4/projects/123/repository/branches/talos%2Fmissing",
+            code=404,
+            msg="Not Found",
+            hdrs=None,
+            fp=io.BytesIO(b'{"message": "404 Branch Not Found"}'),
+        )
+
+        with patch("talos.executor.adjudicate.GITLAB_ADMIN_TOKEN", "fake-token"), \
+             patch("talos.executor.adjudicate.urlopen", side_effect=mock_error):
+            result = _gitlab_branch_sha("123", "talos/missing")
+
+        assert result is None
+
+    def test_auth_failure_raises_runtime_error(self):
+        """API returns 401 → RuntimeError (defect, NOT 'branch not found')."""
+        from unittest.mock import patch
+        from urllib.error import HTTPError
+        import io
+
+        mock_error = HTTPError(
+            url="https://hgit.example.com/api/v4/projects/123/repository/branches/talos%2Ftest",
+            code=401,
+            msg="Unauthorized",
+            hdrs=None,
+            fp=io.BytesIO(b'{"message": "401 Unauthorized"}'),
+        )
+
+        with patch("talos.executor.adjudicate.GITLAB_ADMIN_TOKEN", "fake-token"), \
+             patch("talos.executor.adjudicate.urlopen", side_effect=mock_error):
+            with pytest.raises(RuntimeError, match="GitLab API error 401"):
+                _gitlab_branch_sha("123", "talos/test")
+
+    def test_no_token_raises_runtime_error(self):
+        """No GitLab token configured → RuntimeError (defect)."""
+        with patch("talos.executor.adjudicate.GITLAB_ADMIN_TOKEN", ""):
+            with pytest.raises(RuntimeError, match="token not configured"):
+                _gitlab_branch_sha("123", "talos/test")
+
+
+# ═══════════════════════════════════════════════════════════════
+# P1-1: 达上限时追加转人工评论
+# ═══════════════════════════════════════════════════════════════
+
+class TestBlockedComment:
+    """P1-1: 任务落成 blocked 后追加「转人工」评论 + 缺项清单。"""
+
+    def test_blocked_comment_contains_transfer_and_defects(self):
+        """_format_blocked_comment 输出含「转人工」和缺项清单。"""
+        from talos.executor.finalize import _format_blocked_comment
+
+        verdict = Verdict(
+            status="unmet",
+            problems=["产物缺失: /work/out/c.md"],
+            defects=[],
+        )
+
+        comment = _format_blocked_comment(verdict, "t_test", 1, failure_limit=2)
+
+        assert "转人工" in comment, f"Missing '转人工' in: {comment}"
+        assert "连续 2 次" in comment, f"Missing failure count in: {comment}"
+        assert "/work/out/c.md" in comment, f"Missing defect list in: {comment}"
+
+    def test_blocked_comment_added_when_task_blocked(self, conn, make_task, make_run):
+        """连续两次 unmet → blocked 时，task_comments 里有「转人工」评论。"""
+        from talos.executor.finalize import finalize
+        from talos.executor.adjudicate import Verdict
+
+        task_id = make_task(id="t_blocked01", status="running")
+        make_run(id=1, task_id=task_id, status="running")
+
+        # First unmet → requeue (not blocked yet)
+        verdict1 = Verdict(
+            status="unmet",
+            problems=["产物缺失: /work/out/c.md"],
+        )
+        with patch("hermes_cli.kanban_db_dispatch._record_task_failure", return_value=False), \
+             patch("hermes_cli.kanban_db.add_comment") as mock_comment1:
+            result1 = finalize(conn, task_id, 1, verdict1)
+
+        assert result1 == "ready"
+        # First unmet should NOT have 转人工 comment
+        first_comments = [
+            c for c in mock_comment1.call_args_list
+            if "转人工" in str(c)
+        ]
+        assert len(first_comments) == 0, "转人工 comment should not appear on first unmet"
+
+        # Second unmet → blocked
+        make_run(id=2, task_id=task_id, status="running")
+        verdict2 = Verdict(
+            status="unmet",
+            problems=["产物缺失: /work/out/c.md"],
+        )
+        with patch("hermes_cli.kanban_db_dispatch._record_task_failure", return_value=True), \
+             patch("hermes_cli.kanban_db.add_comment") as mock_comment2:
+            result2 = finalize(conn, task_id, 2, verdict2)
+
+        assert result2 == "blocked"
+        # Second unmet SHOULD have 转人工 comment
+        blocked_comments = [
+            c for c in mock_comment2.call_args_list
+            if "转人工" in str(c)
+        ]
+        assert len(blocked_comments) >= 1, (
+            f"转人工 comment missing on blocked! Calls: {mock_comment2.call_args_list}"
+        )
