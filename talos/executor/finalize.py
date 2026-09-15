@@ -36,12 +36,13 @@ def _format_comment(verdict: Verdict, task_id: str, run_id: int) -> str:
     """
     if verdict.status == "pass":
         parts = [f"[执行器] 裁决(run {run_id})：通过"]
-        # Add branch links from artifacts
+        # Add branch links from artifacts (verified by adjudicator)
         for art in verdict.artifacts:
             if isinstance(art, dict) and art.get("kind") == "git_branch":
                 parts.append(f"分支: {art.get('repo', '')}/-/tree/{art.get('branch', '')}")
         if verdict.summary:
-            parts.append(f"摘要: {verdict.summary[:500]}")
+            parts.append("以下为实例自述，未经验证：")
+            parts.append(verdict.summary[:500])
         return "\n".join(parts)
 
     elif verdict.status == "degraded":
@@ -49,7 +50,8 @@ def _format_comment(verdict: Verdict, task_id: str, run_id: int) -> str:
         if verdict.defects:
             parts.append("缺陷: " + "; ".join(verdict.defects[:5]))
         if verdict.summary:
-            parts.append(f"摘要: {verdict.summary[:500]}")
+            parts.append("以下为实例自述，未经验证：")
+            parts.append(verdict.summary[:500])
         return "\n".join(parts)
 
     elif verdict.status == "unmet":

@@ -1135,3 +1135,54 @@ class TestBlockedComment:
         assert len(blocked_comments) >= 1, (
             f"转人工 comment missing on blocked! Calls: {mock_comment2.call_args_list}"
         )
+
+
+class TestSelfReportedSummaryLabeled:
+    """通过/降级评论中，实例自述摘要必须带「以下为实例自述，未经验证：」前缀标记。"""
+
+    def test_pass_comment_labels_self_reported_summary(self):
+        """pass 评论的摘要段带自述前缀标记。"""
+        from talos.executor.finalize import _format_comment
+
+        verdict = Verdict(
+            status="pass",
+            problems=[],
+            defects=[],
+            artifacts=[
+                {"kind": "git_branch", "repo": "https://example.com/repo.git",
+                 "branch": "talos/t_test", "sha": "abc123"}
+            ],
+            summary="我在 talos/t_test 分支上推送了代码，sha=abc123，CI 已通过。",
+        )
+
+        comment = _format_comment(verdict, "t_test", 1)
+
+        # 验证: 分支链接来自已验证 artifact
+        assert "分支: https://example.com/repo.git/-/tree/talos/t_test" in comment
+        # 验证: 自述摘要带前缀标记
+        assert "以下为实例自述，未经验证：" in comment, (
+            f"Missing self-reported label in: {comment}"
+        )
+        # 验证: 自述内容在前缀标记之后
+        label_idx = comment.index("以下为实例自述，未经验证：")
+        summary_idx = comment.index("我在 talos/t_test")
+        assert summary_idx > label_idx, "Summary should come after the label"
+
+    def test_degraded_comment_labels_self_reported_summary(self):
+        """降级评论的摘要段带自述前缀标记。"""
+        from talos.executor.finalize import _format_comment
+
+        verdict = Verdict(
+            status="degraded",
+            problems=[],
+            defects=["CI 验证: 仓库不可达"],
+            summary="代码已推送，流水线已跑绿。",
+        )
+
+        comment = _format_comment(verdict, "t_test", 1)
+
+        assert "⚠️ 降级放行" in comment
+        assert "以下为实例自述，未经验证：" in comment, (
+            f"Missing self-reported label in: {comment}"
+        )
+        assert "代码已推送" in comment
