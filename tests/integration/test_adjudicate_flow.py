@@ -27,24 +27,14 @@ TALOS_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(TALOS_ROOT))
 sys.path.insert(0, str(Path.home() / ".hermes" / "hermes-agent"))
 
-KANBAN_DB = os.environ.get(
-    "HERMES_KANBAN_DB",
-    str(Path.home() / ".hermes" / "kanban" / "kanban.db"),
-)
 TALOS_HOME = Path(os.environ.get("TALOS_HOME", str(Path.home() / ".hermes" / "talos")))
 PILOT_REPO = "https://hgit.haier.net/S05190/talos-pilot.git"
 
 
 # ── Fixtures ─────────────────────────────────────────────────────
-
-
-@pytest.fixture
-def conn():
-    """Real kanban DB connection (read/write, auto-cleanup)."""
-    c = sqlite3.connect(KANBAN_DB)
-    c.row_factory = sqlite3.Row
-    yield c
-    c.close()
+# conn and make_task are inherited from tests/conftest.py — do NOT
+# override them here. The conftest versions use a temporary DB created
+# by make_test_db(), never the real kanban.db.
 
 
 @pytest.fixture

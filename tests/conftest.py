@@ -2,7 +2,7 @@
 
 Fail-safe policy: tests MUST run against a temporary DB only. If no
 explicit test DB path is provided via TALOS_TEST_DB, every test skips.
-Tests NEVER fall back to HERMES_KANBAN_DB or any default real path.
+Tests NEVER fall back to any default real path.
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ from pathlib import Path
 import pytest
 
 # Fail-safe guard: if TALOS_TEST_DB is not set, skip all tests.
-# We do NOT check HERMES_KANBAN_DB — the absence of a test DB is itself
-# the signal to skip. This prevents any test from silently connecting to
-# a production database.
+# We do NOT check any production DB env var — the absence of a test DB
+# is itself the signal to skip. This prevents any test from silently
+# connecting to a production database.
 _TEST_DB = os.environ.get("TALOS_TEST_DB")
 if not _TEST_DB:
     pytest.skip(
