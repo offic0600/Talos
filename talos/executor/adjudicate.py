@@ -137,8 +137,8 @@ def check_artifacts(decl: Declaration, bundle: CollectedBundle) -> tuple[list[st
 def check_git_pushed(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], list[str]]:
     """Check git branch exists on remote and sha matches self-report (§6, I4).
 
-    Uses ``git ls-remote`` — the authoritative source, not the worker's
-    self-report. Repo/branch come from injected bindings (I11).
+    Uses GitLab API ``_gitlab_branch_sha`` — the authoritative source, not
+    the worker's self-report. Repo/branch come from injected bindings (I11).
     """
     problems: list[str] = []
     defects: list[str] = []
@@ -166,7 +166,7 @@ def check_git_pushed(decl: Declaration, bundle: CollectedBundle) -> tuple[list[s
         return problems, defects
 
     if remote_sha is None:
-        # Branch doesn't exist (repo is reachable since _ls_remote didn't raise)
+        # Branch doesn't exist (repo is reachable since _gitlab_branch_sha didn't raise)
         problems.append(f"分支不存在: {branch} on {repo_url}")
         return problems, defects
 
