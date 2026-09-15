@@ -105,9 +105,21 @@ def _handle_kernel_recycled(conn: Any, task_id: str, run_id: int, reason: str) -
 
     Does NOT call finalize — the kernel already set the run's terminal status.
     The executor only provides evidence (archive) and explanation (comment).
+
+    Idempotency: writes a ``recycled`` marker file in the task directory.
+    If the marker already exists, this run has already been handled — skip.
     """
     from hermes_cli import kanban_db as kb
     from talos.executor.adjudicate import Verdict
+    from talos.executor.constants import task_dir as _task_dir
+
+    # Idempotency guard: check for persistent marker
+    tdir = _task_dir(task_id, run_id)
+    marker = tdir / "recycled"
+    if marker.exists():
+        log_event("skip", task_id=task_id, run_id=run_id,
+                  msg="recycled marker already exists, skipping")
+        return
 
     log_event("kernel_recycled", task_id=task_id, run_id=run_id, msg=reason)
 
@@ -138,11 +150,19 @@ def _handle_kernel_recycled(conn: Any, task_id: str, run_id: int, reason: str) -
         kb.add_comment(
             conn, task_id,
             author=EXECUTOR_AUTHOR,
-            body=f"[执行器] 裁决(run {run_id})：本次运行被内核回收：{reason}",
+            body=f"[执行器] 运行回收(run {run_id})：本次运行被内核回收：{reason}",
         )
     except Exception as e:
         log_event("error", task_id=task_id, run_id=run_id,
                   msg=f"comment (kernel recycled) failed: {e}")
+
+    # Write idempotency marker (after comment+archive succeed, before reap)
+    try:
+        tdir.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+    except OSError as e:
+        log_event("error", task_id=task_id, run_id=run_id,
+                  msg=f"failed to write recycled marker: {e}")
 
     # Reap container + credentials
     reap(task_id, run_id)

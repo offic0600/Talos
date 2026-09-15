@@ -1257,7 +1257,7 @@ class TestBadDeclarationBlocksBeforeSpawn:
             "INSERT INTO task_comments (task_id, author, body, created_at) "
             "VALUES (?, ?, ?, ?)",
             (task_id, EXECUTOR_AUTHOR,
-             "[执行器] 裁决(run 101)：校验器故障：声明非法: frontmatter YAML 非法",
+             "[执行器] 拉起前检查(run 101)：校验器故障：声明非法: frontmatter YAML 非法",
              1000),
         )
         conn.commit()
@@ -1326,6 +1326,11 @@ class TestKernelRecycledRun:
         def fake_archive(task_id, run_id, bundle, verdict):
             archived_dirs.append((task_id, run_id, verdict.status))
 
+        # Mock task_dir to use tmp_path (marker file isolation)
+        monkeypatch.setattr(
+            "talos.executor.constants.task_dir",
+            lambda tid, rid: tmp_path / tid / str(rid),
+        )
         monkeypatch.setattr(
             "talos.executor.loop.collect", lambda tid, rid: mock_bundle
         )
@@ -1358,4 +1363,67 @@ class TestKernelRecycledRun:
         ).fetchone()
         assert task["status"] == "blocked", (
             "Executor must not change task status for kernel-recycled runs"
+        )
+
+    def test_kernel_recycled_idempotent_two_ticks(
+        self, conn, make_task, make_run, tmp_path, monkeypatch
+    ):
+        """连续两次处置同一个被内核回收的 run → 评论只有一条、归档只写一次。
+
+        P0 幂等性：_kernel_recycle_reason 只查 run 状态（永远不变），
+        如果没有持久防重标记，每个 tick 都会重复收集+归档+评论。
+        """
+        from talos.executor.loop import _adjudicate_exited
+
+        task_id = make_task(id="t_kt5", status="blocked", current_run_id=404)
+        make_run(id=404, task_id=task_id, status="timed_out",
+                 outcome="timed_out")
+
+        mock_bundle = MagicMock()
+        archive_calls: list[tuple] = []
+
+        def fake_archive(tid, rid, bundle, verdict):
+            archive_calls.append((tid, rid, verdict.status))
+
+        mock_containers = [{"name": "hermes-worker-t_kt5-404",
+                            "task_id": "t_kt5", "run_id": 404}]
+
+        # Mock task_dir to use tmp_path (marker file isolation)
+        monkeypatch.setattr(
+            "talos.executor.constants.task_dir",
+            lambda tid, rid: tmp_path / tid / str(rid),
+        )
+
+        # Simulate two consecutive ticks — container still in exited list
+        # (reap is mocked to do nothing, so container persists)
+        for tick_num in range(1, 3):
+            monkeypatch.setattr(
+                "talos.executor.loop.list_exited_containers",
+                lambda: mock_containers,
+            )
+            monkeypatch.setattr(
+                "talos.executor.loop.collect",
+                lambda tid, rid: mock_bundle,
+            )
+            monkeypatch.setattr(
+                "talos.executor.loop.archive", fake_archive,
+            )
+            monkeypatch.setattr(
+                "talos.executor.loop.reap",
+                lambda tid, rid, **kw: None,
+            )
+            _adjudicate_exited(conn)
+
+        # P0 assertions: exactly 1 comment, exactly 1 archive
+        comments = conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = ?",
+            (task_id,),
+        ).fetchall()
+        assert len(comments) == 1, (
+            f"Expected exactly 1 comment after 2 ticks, got {len(comments)}: "
+            f"{[c['body'] for c in comments]}"
+        )
+
+        assert len(archive_calls) == 1, (
+            f"Expected exactly 1 archive call, got {len(archive_calls)}"
         )

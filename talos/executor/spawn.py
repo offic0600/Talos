@@ -386,16 +386,18 @@ def make_spawn_fn():
                 from talos.executor.constants import EXECUTOR_AUTHOR
                 reason = f"校验器故障：声明非法: {e}"
                 with kbc.connect() as conn:
-                    kb.add_comment(
-                        conn, task.id,
-                        author=EXECUTOR_AUTHOR,
-                        body=f"[执行器] 裁决(run {run_id})：{reason}",
-                    )
+                    # P1-2: block_task first, comment only on success.
+                    # A "blocked" comment without a successful block is misleading.
                     kb.block_task(
                         conn, task.id,
                         reason=reason,
                         kind="capability",
                         expected_run_id=run_id,
+                    )
+                    kb.add_comment(
+                        conn, task.id,
+                        author=EXECUTOR_AUTHOR,
+                        body=f"[执行器] 拉起前检查(run {run_id})：{reason}",
                     )
             except Exception as fe:
                 log_event("error", task_id=task.id, run_id=run_id,
