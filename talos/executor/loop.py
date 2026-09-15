@@ -71,6 +71,83 @@ def _start_alive_thread(stop_event: threading.Event) -> threading.Thread:
     return t
 
 
+def _kernel_recycle_reason(conn: Any, run_id: int) -> Optional[str]:
+    """Check if a run was terminated by the kernel (not by the executor).
+
+    Returns the reason string if kernel-recycled, or None if the run was
+    adjudicated normally by the executor.
+    """
+    if run_id is None:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT status, outcome FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+    except Exception:
+        return None
+    if row is None:
+        return None
+
+    status = row["status"] if "status" in row.keys() else None
+    outcome = row["outcome"] if "outcome" in row.keys() else None
+
+    # Kernel-terminated statuses (set by kernel, not by executor finalize)
+    if status == "timed_out" or outcome == "timed_out":
+        return "内核超时回收"
+    if status == "crashed" or outcome == "crashed":
+        return "内核崩溃回收"
+    return None
+
+
+def _handle_kernel_recycled(conn: Any, task_id: str, run_id: int, reason: str) -> None:
+    """Collect, archive, and comment on a kernel-recycled run (§M15).
+
+    Does NOT call finalize — the kernel already set the run's terminal status.
+    The executor only provides evidence (archive) and explanation (comment).
+    """
+    from hermes_cli import kanban_db as kb
+    from talos.executor.adjudicate import Verdict
+
+    log_event("kernel_recycled", task_id=task_id, run_id=run_id, msg=reason)
+
+    # Collect (best-effort — container was killed, files may be partial)
+    bundle = None
+    try:
+        bundle = collect(task_id, run_id)
+    except Exception as e:
+        log_event("error", task_id=task_id, run_id=run_id,
+                  msg=f"collect (kernel recycled) failed: {e}")
+
+    # Build a minimal verdict for the archive
+    verdict = Verdict(
+        status="recycled",
+        metadata={"kernel_recycled": True, "reason": reason},
+    )
+
+    # Archive (best-effort)
+    if bundle is not None:
+        try:
+            archive(task_id, run_id, bundle, verdict)
+        except Exception as e:
+            log_event("error", task_id=task_id, run_id=run_id,
+                      msg=f"archive (kernel recycled) failed: {e}")
+
+    # Comment
+    try:
+        kb.add_comment(
+            conn, task_id,
+            author=EXECUTOR_AUTHOR,
+            body=f"[执行器] 裁决(run {run_id})：本次运行被内核回收：{reason}",
+        )
+    except Exception as e:
+        log_event("error", task_id=task_id, run_id=run_id,
+                  msg=f"comment (kernel recycled) failed: {e}")
+
+    # Reap container + credentials
+    reap(task_id, run_id)
+
+
 def _is_run_adjudicated(conn: Any, run_id: int) -> bool:
     """Check if a run already has a verdict (I7 idempotency).
 
@@ -158,8 +235,16 @@ def _adjudicate_exited(conn: Any) -> None:
 
         # I7: skip if already adjudicated
         if _is_run_adjudicated(conn, run_id):
-            # Still reap the container if it's still around
-            reap(task_id, run_id)
+            # Check if the run was kernel-recycled (timed_out/crashed).
+            # If so, we still need to collect+archive+comment, just skip
+            # finalize (don't call complete_task/_record_task_failure).
+            # Design §M15: "不再落终局，但仍要做收集、归档、评论、回收容器"
+            kernel_reason = _kernel_recycle_reason(conn, run_id)
+            if kernel_reason:
+                _handle_kernel_recycled(conn, task_id, run_id, kernel_reason)
+            else:
+                # Already adjudicated by us — just reap the container
+                reap(task_id, run_id)
             continue
 
         # I8: heartbeat during adjudication

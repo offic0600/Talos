@@ -371,7 +371,36 @@ def make_spawn_fn():
         tdir.mkdir(parents=True, exist_ok=True)
 
         # Load declarations (I1: type-agnostic, driven by skill frontmatter)
-        decl = load_declarations(task.skills, task)
+        # DeclarationError → block immediately, do NOT requeue (re-running won't
+        # change the skill's frontmatter).  This must happen BEFORE any container
+        # starts, per §6/M12.
+        from talos.executor.declarations import DeclarationError
+        try:
+            decl = load_declarations(task.skills, task)
+        except DeclarationError as e:
+            log_event("error", task_id=task.id, run_id=run_id,
+                      msg=f"declaration load failed: {e}")
+            try:
+                from hermes_cli import kanban_db_connect as kbc
+                from hermes_cli import kanban_db as kb
+                from talos.executor.constants import EXECUTOR_AUTHOR
+                reason = f"校验器故障：声明非法: {e}"
+                with kbc.connect() as conn:
+                    kb.add_comment(
+                        conn, task.id,
+                        author=EXECUTOR_AUTHOR,
+                        body=f"[执行器] 裁决(run {run_id})：{reason}",
+                    )
+                    kb.block_task(
+                        conn, task.id,
+                        reason=reason,
+                        kind="capability",
+                        expected_run_id=run_id,
+                    )
+            except Exception as fe:
+                log_event("error", task_id=task.id, run_id=run_id,
+                          msg=f"block_task (decl error) failed: {fe}")
+            return None
 
         # Determine repo URL (I11: binding param from task body first line 'repo:')
         repo_url = _extract_repo(task)

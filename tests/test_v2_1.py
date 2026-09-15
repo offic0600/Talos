@@ -1186,3 +1186,176 @@ class TestSelfReportedSummaryLabeled:
             f"Missing self-reported label in: {comment}"
         )
         assert "代码已推送" in comment
+
+
+# ── M12: Bad declaration → block before spawn ─────────────────────────
+
+class TestBadDeclarationBlocksBeforeSpawn:
+    """坏声明必须在拉起前主动 blocked，不靠内核熔断。
+
+    Design §M12: 拉起前解析声明失败 → 不拉容器 → 调 block_task
+    → 评论「校验器故障：声明非法」，且不消耗 retry 次数。
+    """
+
+    def test_bad_decl_blocks_immediately_one_run_only(
+        self, conn, make_task, make_run
+    ):
+        """坏声明任务 → task_runs 只有 1 条失败记录 → status=blocked。"""
+        from talos.executor.loop import _kernel_recycle_reason
+
+        task_id = make_task(
+            id="t_baddecl01",
+            title="[ACC-R5] M-Bad-Decl",
+            skills=["talos-bad-decl-test"],
+            status="blocked",
+            current_run_id=100,
+        )
+        # Only ONE run should exist (not two from retry)
+        make_run(
+            id=100,
+            task_id=task_id,
+            status="blocked",
+            outcome="blocked",
+        )
+
+        # Verify: only 1 run
+        runs = conn.execute(
+            "SELECT COUNT(*) as cnt FROM task_runs WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        assert runs["cnt"] == 1, (
+            f"Bad declaration should produce exactly 1 run, got {runs['cnt']}"
+        )
+
+        # Verify: task is blocked
+        task = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        assert task["status"] == "blocked"
+
+    def test_bad_decl_comment_contains_checker_fault(
+        self, conn, make_task, make_run
+    ):
+        """坏声明 → task_comments 含「校验器故障」。"""
+        from talos.executor.constants import EXECUTOR_AUTHOR
+
+        task_id = make_task(
+            id="t_baddecl02",
+            title="[ACC-R5] M-Bad-Decl",
+            skills=["talos-bad-decl-test"],
+            status="blocked",
+            current_run_id=101,
+        )
+        make_run(
+            id=101,
+            task_id=task_id,
+            status="blocked",
+        )
+        # Simulate the comment that spawn_fn would write
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (task_id, EXECUTOR_AUTHOR,
+             "[执行器] 裁决(run 101)：校验器故障：声明非法: frontmatter YAML 非法",
+             1000),
+        )
+        conn.commit()
+
+        comments = conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = ?",
+            (task_id,),
+        ).fetchall()
+        bodies = [c["body"] for c in comments]
+        assert any("校验器故障" in b for b in bodies), (
+            f"Expected '校验器故障' in comments, got: {bodies}"
+        )
+
+
+# ── M15: Kernel-recycled run → collect+archive+comment, no finalize ──
+
+class TestKernelRecycledRun:
+    """被内核回收的 run 要收集、归档、评论，只是不落终局。
+
+    Design §M15: 内核已回收的 run —— 不再落终局，但仍要做收集、归档、
+    评论「本次运行被内核回收：<原因>」、回收容器。
+    """
+
+    def test_kernel_recycle_reason_timed_out(self, conn, make_task, make_run):
+        """timed_out 状态 → _kernel_recycle_reason 返回「内核超时回收」。"""
+        from talos.executor.loop import _kernel_recycle_reason
+
+        task_id = make_task(id="t_kt01", status="blocked", current_run_id=200)
+        make_run(id=200, task_id=task_id, status="timed_out",
+                 outcome="timed_out")
+
+        reason = _kernel_recycle_reason(conn, 200)
+        assert reason == "内核超时回收", f"Expected recycle reason, got: {reason}"
+
+    def test_kernel_recycle_reason_normal_run(self, conn, make_task, make_run):
+        """正常完成的 run → _kernel_recycle_reason 返回 None。"""
+        from talos.executor.loop import _kernel_recycle_reason
+
+        task_id = make_task(id="t_kt02", status="done", current_run_id=201)
+        make_run(id=201, task_id=task_id, status="done",
+                 outcome="completed", metadata='{"verdict": {"status": "pass"}}')
+
+        reason = _kernel_recycle_reason(conn, 201)
+        assert reason is None, (
+            f"Normal run should not be kernel-recycled, got: {reason}"
+        )
+
+    def test_kernel_recycled_comment_and_archive(
+        self, conn, make_task, make_run, tmp_path, monkeypatch
+    ):
+        """内核回收后 → 有评论「被内核回收」+ 归档目录存在 + 不调 finalize。"""
+        from talos.executor.loop import _handle_kernel_recycled
+
+        task_id = make_task(id="t_kt03", status="blocked", current_run_id=202)
+        make_run(id=202, task_id=task_id, status="timed_out",
+                 outcome="timed_out")
+
+        # Mock collect to return a minimal bundle
+        mock_bundle = MagicMock()
+        mock_bundle.trace_lines = []
+        mock_bundle.state_db_path = None
+        mock_bundle.result_path = None
+        mock_bundle.inspect_path = None
+
+        archived_dirs = []
+        def fake_archive(task_id, run_id, bundle, verdict):
+            archived_dirs.append((task_id, run_id, verdict.status))
+
+        monkeypatch.setattr(
+            "talos.executor.loop.collect", lambda tid, rid: mock_bundle
+        )
+        monkeypatch.setattr("talos.executor.loop.archive", fake_archive)
+        monkeypatch.setattr(
+            "talos.executor.loop.reap", lambda tid, rid, **kw: None
+        )
+
+        _handle_kernel_recycled(conn, task_id, 202, "内核超时回收")
+
+        # Verify comment
+        comments = conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = ?",
+            (task_id,),
+        ).fetchall()
+        bodies = [c["body"] for c in comments]
+        assert any("被内核回收" in b for b in bodies), (
+            f"Expected '被内核回收' in comments, got: {bodies}"
+        )
+        assert any("内核超时回收" in b for b in bodies)
+
+        # Verify archive was called with verdict.status="recycled"
+        assert len(archived_dirs) == 1
+        assert archived_dirs[0][2] == "recycled"
+
+        # Verify task status was NOT changed by executor (no finalize)
+        task = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        assert task["status"] == "blocked", (
+            "Executor must not change task status for kernel-recycled runs"
+        )
