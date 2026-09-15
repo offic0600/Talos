@@ -251,10 +251,10 @@ def load_declarations(skills: Optional[list[str]], task: Any = None) -> Declarat
                 _source_rank = {"": -1, "none": 0, "evidence": 1, "ci": 2}
                 if _source_rank.get(source, 1) > _source_rank.get(merged.verification.source, -1):
                     merged.verification.source = source
-                merged.verification.timeout_s = max(
-                    merged.verification.timeout_s,
-                    int(ver.get("timeout_s", 900)),
-                )
+                # Skill-specified timeout takes precedence over the 900s default.
+                # Using max() here would force 900s even when the skill says 120s.
+                if "timeout_s" in ver:
+                    merged.verification.timeout_s = int(ver["timeout_s"])
 
         # deliverables (v2)
         for dl in fm.get("deliverables", []) or []:
