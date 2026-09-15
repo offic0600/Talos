@@ -526,37 +526,124 @@ class TestContainerConfigTemplate:
 
 
 class TestDispatchSafety:
-    """Regression tests for fork-bomb prevention (RCA §三)."""
+    """Behavioral regression tests for fork-bomb prevention (RCA §三).
 
-    def test_manual_dispatch_has_where_clause(self):
-        """_manual_dispatch in test_adjudicate_flow.py must use WHERE id=?."""
-        import inspect
+    These tests exercise real behavior on a temporary DB — they do NOT
+    inspect source code strings. Each test creates tasks, calls the
+    function under test, and asserts observable state changes.
+    """
+
+    def test_manual_dispatch_only_affects_target_task(self, conn, make_task):
+        """_manual_dispatch must only UPDATE the target task, leaving
+        all other tasks' status / claim_lock / current_run_id untouched."""
+        import time
         from tests.integration.test_adjudicate_flow import _manual_dispatch
-        src = inspect.getsource(_manual_dispatch)
-        assert "WHERE id=?" in src, (
-            "_manual_dispatch UPDATE must have WHERE id=? to prevent "
-            "cross-contamination of other tasks"
+
+        # Create two tasks in the temp DB
+        tid_a = make_task(id="t_safety_a", title="safety-a")
+        tid_b = make_task(id="t_safety_b", title="safety-b")
+
+        # Snapshot task B's state before dispatching A
+        row_b_before = dict(conn.execute(
+            "SELECT status, claim_lock, current_run_id, started_at "
+            "FROM tasks WHERE id=?", (tid_b,)).fetchone())
+
+        # Dispatch task A
+        run_id = _manual_dispatch(conn, tid_a)
+
+        # Verify task A was dispatched
+        row_a = dict(conn.execute(
+            "SELECT status, claim_lock, current_run_id FROM tasks WHERE id=?",
+            (tid_a,)).fetchone())
+        assert row_a["status"] == "running"
+        assert row_a["claim_lock"] == "talos-integration-test"
+        assert row_a["current_run_id"] == run_id
+
+        # CRITICAL: task B must be completely untouched
+        row_b_after = dict(conn.execute(
+            "SELECT status, claim_lock, current_run_id, started_at "
+            "FROM tasks WHERE id=?", (tid_b,)).fetchone())
+        assert row_b_after == row_b_before, (
+            f"Task B was modified by _manual_dispatch on task A!\n"
+            f"Before: {row_b_before}\n"
+            f"After:  {row_b_after}"
         )
 
-    def test_max_spawn_passed_to_dispatch_once(self):
-        """loop._dispatch must pass max_spawn to prevent unbounded fan-out."""
-        import inspect
+    def test_max_spawn_passed_to_dispatch_once(self, conn, make_task):
+        """loop._dispatch must pass max_spawn to dispatch_once.
+
+        Uses a fake dispatch_once to capture the actual kwargs passed."""
+        from unittest.mock import MagicMock
         from talos.executor.loop import _dispatch
-        src = inspect.getsource(_dispatch)
-        assert "max_spawn" in src, (
-            "_dispatch must pass max_spawn= to dispatch_once"
+
+        captured_kwargs = {}
+
+        def fake_dispatch_once(c, **kwargs):
+            captured_kwargs.update(kwargs)
+            result = MagicMock()
+            result.spawned = []
+            return result
+
+        # _dispatch does `from hermes_cli.kanban_db_dispatch import dispatch_once`
+        # at call time, so we patch the function on the source module.
+        import hermes_cli.kanban_db_dispatch
+        original = hermes_cli.kanban_db_dispatch.dispatch_once
+        hermes_cli.kanban_db_dispatch.dispatch_once = fake_dispatch_once
+
+        try:
+            _dispatch(conn, spawn_fn=None)
+        finally:
+            hermes_cli.kanban_db_dispatch.dispatch_once = original
+
+        assert "max_spawn" in captured_kwargs, (
+            "dispatch_once was called without max_spawn parameter"
+        )
+        assert captured_kwargs["max_spawn"] is not None, (
+            "max_spawn was passed as None — unbounded fan-out risk"
+        )
+        assert captured_kwargs["max_spawn"] == 2, (
+            f"Expected max_spawn=2 (default), got {captured_kwargs['max_spawn']}"
         )
 
-    def test_talos_max_spawn_default(self):
-        """TALOS_MAX_SPAWN defaults to 2."""
-        from talos.executor.constants import TALOS_MAX_SPAWN
-        assert TALOS_MAX_SPAWN == 2, f"Expected default 2, got {TALOS_MAX_SPAWN}"
+    def test_talos_max_spawn_default_is_2(self):
+        """TALOS_MAX_SPAWN must default to 2 when env var is unset."""
+        # This is a value test, not a source inspection — it reads the
+        # actual runtime value of the constant.
+        import importlib
+        import talos.executor.constants as constants_mod
 
-    def test_conftest_guard_against_real_db(self):
-        """conftest.py must skip when HERMES_KANBAN_DB is set."""
-        import inspect
-        import tests.conftest as conftest
-        src = inspect.getsource(conftest)
-        assert "HERMES_KANBAN_DB" in src and "pytest.skip" in src, (
-            "conftest.py must guard against running tests on the real DB"
+        # Unset env var and re-import to get default
+        import os
+        old_val = os.environ.pop("TALOS_MAX_SPAWN", None)
+        try:
+            importlib.reload(constants_mod)
+            assert constants_mod.TALOS_MAX_SPAWN == 2, (
+                f"Expected default 2, got {constants_mod.TALOS_MAX_SPAWN}"
+            )
+        finally:
+            if old_val is not None:
+                os.environ["TALOS_MAX_SPAWN"] = old_val
+                importlib.reload(constants_mod)
+
+    def test_conftest_skips_without_test_db(self):
+        """conftest must skip all tests when TALOS_TEST_DB is not set.
+
+        This is a behavior test: it runs pytest in a subprocess with
+        no TALOS_TEST_DB and verifies the collection is skipped.
+        """
+        import subprocess
+
+        result = subprocess.run(
+            ["python3", "-m", "pytest", "tests/test_v2_1.py::TestDispatchSafety::test_talos_max_spawn_default_is_2",
+             "-v", "--no-header", "-x"],
+            capture_output=True, text=True, timeout=30,
+            env={**__import__("os").environ, "TALOS_TEST_DB": ""},
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        # With TALOS_TEST_DB unset/empty, pytest should skip (message goes to stderr)
+        combined = result.stdout + result.stderr
+        assert "Skipped" in combined or "skipped" in combined.lower(), (
+            f"Tests did not skip when TALOS_TEST_DB is empty!\n"
+            f"stdout: {result.stdout[:500]}\n"
+            f"stderr: {result.stderr[:500]}"
         )

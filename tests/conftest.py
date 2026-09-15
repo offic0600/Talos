@@ -1,4 +1,9 @@
-"""Shared pytest fixtures for Talos executor tests."""
+"""Shared pytest fixtures for Talos executor tests.
+
+Fail-safe policy: tests MUST run against a temporary DB only. If no
+explicit test DB path is provided via TALOS_TEST_DB, every test skips.
+Tests NEVER fall back to HERMES_KANBAN_DB or any default real path.
+"""
 
 from __future__ import annotations
 
@@ -10,11 +15,16 @@ from pathlib import Path
 
 import pytest
 
-# Guard: refuse to run against the real kanban DB unless explicitly opted in.
-if os.environ.get("HERMES_KANBAN_DB") and not os.environ.get("TALOS_TEST_ALLOW_REAL_DB"):
+# Fail-safe guard: if TALOS_TEST_DB is not set, skip all tests.
+# We do NOT check HERMES_KANBAN_DB — the absence of a test DB is itself
+# the signal to skip. This prevents any test from silently connecting to
+# a production database.
+_TEST_DB = os.environ.get("TALOS_TEST_DB")
+if not _TEST_DB:
     pytest.skip(
-        "HERMES_KANBAN_DB is set — refusing to run tests against a real DB. "
-        "Unset it or set TALOS_TEST_ALLOW_REAL_DB=1 to override.",
+        "TALOS_TEST_DB is not set — refusing to run tests without an "
+        "explicit test database path. Set TALOS_TEST_DB=/tmp/test.db "
+        "or use the in-memory fixture via `make_test_db()`.",
         allow_module_level=True,
     )
 
@@ -27,7 +37,7 @@ from tests.fixtures import make_test_db, insert_task, insert_run
 
 @pytest.fixture
 def conn():
-    """Provide a fresh in-memory-style kanban DB with real schema."""
+    """Provide a fresh temporary kanban DB with real schema."""
     conn, _db_path = make_test_db()
     try:
         yield conn
