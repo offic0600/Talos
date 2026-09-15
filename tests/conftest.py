@@ -28,6 +28,10 @@ if not _TEST_DB:
         allow_module_level=True,
     )
 
+# NOTE: TALOS_TEST_DB only serves as a "we are in test mode" switch — its
+# value is never used. The actual test database is created by make_test_db()
+# via mkdtemp() in tests/fixtures.py.
+
 # Ensure project root is importable
 TALOS_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TALOS_ROOT))
