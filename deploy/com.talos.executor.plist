@@ -20,6 +20,8 @@
     <!-- Environment file is sourced via EnvironmentVariables -->
     <key>EnvironmentVariables</key>
     <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Docker.app/Contents/Resources/bin</string>
         <key>HERMES_HOME</key>
         <string>/Users/zhaoc/.hermes</string>
         <key>TALOS_HOME</key>

@@ -15,6 +15,14 @@ if [ -f "$HOME/.hermes/talos.env" ]; then
 fi
 
 # Generate plist with resolved paths
+RUN_SCRIPT_DST="${TALOS_HOME:-$HOME/.hermes/talos}/run-executor.sh"
+
+# Install run-executor.sh from repo
+SCRIPT_SRC="$(dirname "$0")/run-executor.sh"
+cp "$SCRIPT_SRC" "$RUN_SCRIPT_DST"
+chmod +x "$RUN_SCRIPT_DST"
+echo "[talos] Installed run-executor.sh to $RUN_SCRIPT_DST"
+
 cat > "$PLIST_DST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -25,31 +33,32 @@ cat > "$PLIST_DST" <<EOF
 
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/env</string>
-        <string>PYTHONPATH=$(cd "$(dirname "$0")/.." && pwd):${HERMES_HOME:-$HOME/.hermes}/hermes-agent</string>
-        <string>TALOS_HOME=${TALOS_HOME:-$HOME/.hermes/talos}</string>
-        <string>TALOS_WORKER_IMAGE=${TALOS_WORKER_IMAGE:-hermes-worker:latest}</string>
-        <string>TALOS_GITLAB_URL=${TALOS_GITLAB_URL:-https://hgit.haier.net}</string>
-        <string>TALOS_GITLAB_ADMIN_TOKEN=${TALOS_GITLAB_ADMIN_TOKEN:-}</string>
-        <string>TALOS_ES_URL=${TALOS_ES_URL:-}</string>
-        <string>HERMES_KANBAN_DB=${HERMES_KANBAN_DB:-$HOME/.hermes/kanban/kanban.db}</string>
-        <string>python3</string>
-        <string>-m</string>
-        <string>talos.executor.main</string>
+        <string>/bin/bash</string>
+        <string>$RUN_SCRIPT_DST</string>
     </array>
 
     <key>WorkingDirectory</key>
     <string>$(cd "$(dirname "$0")/.." && pwd)</string>
 
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Docker.app/Contents/Resources/bin</string>
+    </dict>
+
+    <!-- KeepAlive: restart on crash, kill -9, or unexpected exit -->
     <key>KeepAlive</key>
     <true/>
 
+    <!-- Restart after 5 seconds (matches systemd RestartSec=5) -->
     <key>ThrottleInterval</key>
     <integer>5</integer>
 
+    <!-- Run at load -->
     <key>RunAtLoad</key>
     <true/>
 
+    <!-- Standard output/error paths -->
     <key>StandardOutPath</key>
     <string>${TALOS_HOME:-$HOME/.hermes/talos}/executor.stdout.log</string>
     <key>StandardErrorPath</key>
