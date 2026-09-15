@@ -740,121 +740,259 @@ class TestDispatchSafety:
 # ═══════════════════════════════════════════════════════════════
 
 class TestUnverifiedArtifactNotInComment:
-    """P0-2: 容器自报的 git_branch 未经验证 → 评论里不出现该分支。
+    """P0-2 (重做): verdict.artifacts 只含裁决器验证过的记录，不信任 result.json 自报。
 
-    容器在 result.json 里编一个 git_branch，执行器不应把它写进看板评论，
-    因为那个分支可能根本不存在。评论里出现的任何制品位置，必须来自裁决器
-    验证过的事实。
+    正确做法：检查函数在验证通过时，用「注入的仓库 + 注入的分支 + API 返回的 sha」
+    构造已验证记录返回。三个值一个都不来自 result.json。没验证过的不进 verdict.artifacts。
     """
 
-    def test_unverified_git_branch_excluded_from_comment(self, tmp_path):
-        """require_push=false 时，result.json 自报的 git_branch 不出现在评论里。"""
-        from talos.executor.finalize import _format_comment
-
-        # Worker self-reported a git_branch that doesn't exist on remote
-        verdict = Verdict(
-            status="pass",
-            summary="Done",
-            artifacts=[
-                {
-                    "kind": "git_branch",
-                    "repo": "https://hgit.example.com/group/repo.git",
-                    "branch": "talos/fake_branch",
-                    "sha": "abc123def456",
-                }
-            ],
-        )
-
-        # Simulate adjudicate()'s artifact filtering for require_push=False:
-        # The git_branch artifact should be filtered out.
-        # In adjudicate(), verified_artifacts would be empty because
-        # require_push=False means no git check was run.
-        # So verdict.artifacts would not contain the git_branch.
-        verdict.artifacts = []  # Simulate post-filtering
-
-        comment = _format_comment(verdict, "t_test", 1)
-        assert "talos/fake_branch" not in comment, (
-            f"Unverified branch appeared in comment: {comment}"
-        )
-        assert "abc123" not in comment, (
-            f"Unverified SHA appeared in comment: {comment}"
-        )
-
-    def test_adjudicate_filters_unverified_branch_when_require_push_false(self, tmp_path):
-        """Full adjudicate() flow: require_push=false → git_branch filtered from verdict.artifacts."""
+    def test_fake_repo_with_real_branch_name_leaks_nothing(self, tmp_path):
+        """对抗性场景：容器自报一个真实存在的分支名，但 repo 指向另一个仓库。
+        check_git_pushed 会产生 problem「自报绑定与任务不符」，但该 problem 不含分支名。
+        旧实现用 `branch in p` 匹配不上 → artifact 原样放行 → 假仓库地址进评论。
+        新实现：verdict.artifacts 只含检查函数构造的记录，不来自 result.json。
+        """
         ws = tmp_path / "workspace"
         ws.mkdir()
-        # Create the artifact file so check_artifacts passes
         artifact_file = ws / "src" / "feature.py"
         artifact_file.parent.mkdir(parents=True)
-        artifact_file.write_text("def feature():\n    return 'hello'\\n")
+        artifact_file.write_text("def feature():\n    return 'hello world'\n")
+
+        # Injected repo (correct)
+        INJECTED_REPO = "https://gitlab.example.com/CORRECT/repo.git"
+        INJECTED_BRANCH = "talos/t_test"
+        API_SHA = "realsha_from_api_999"
+
+        # Worker self-reports a DIFFERENT repo with the same branch name
+        FAKE_REPO = "https://gitlab.example.com/FAKE/repo.git"
 
         bundle = make_bundle(
             tmp_path,
             result_json={
                 "schema": 1,
                 "status": "done",
-                "summary": "Created files",
+                "summary": "Done",
                 "artifacts": [
                     {
                         "kind": "git_branch",
-                        "repo": "https://hgit.example.com/group/repo.git",
-                        "branch": "talos/fake_branch",
-                        "sha": "abc123def456",
+                        "repo": FAKE_REPO,        # fake repo
+                        "branch": INJECTED_BRANCH,  # real branch name
+                        "sha": "self_reported_sha_111",
                     }
                 ],
             },
             workspace_path=ws,
         )
-
-        # require_push=False → check_git_pushed skips, no git verification
         decl = make_decl(
-            artifacts=[ArtifactSpec(path="/work/src/feature.py", min_bytes=10)],
-            git=GitSpec(branch="talos/fake_branch", require_push=False),
+            artifacts=[ArtifactSpec(path="${workspace}/src/feature.py", min_bytes=10)],
+            git=GitSpec(branch=INJECTED_BRANCH, require_push=True),
             verification=VerificationSpec(required=False, source="none"),
-        )
-
-        verdict = adjudicate("t_test", 1, bundle, decl)
-
-        # Verdict should be pass
-        assert verdict.status == "pass", f"Expected pass, got {verdict.status}"
-
-        # The git_branch artifact must NOT be in verdict.artifacts
-        git_branch_arts = [
-            a for a in verdict.artifacts
-            if isinstance(a, dict) and a.get("kind") == "git_branch"
-        ]
-        assert len(git_branch_arts) == 0, (
-            f"Unverified git_branch artifact leaked into verdict: {git_branch_arts}"
-        )
-
-        # Comment should not contain the fake branch
-        from talos.executor.finalize import _format_comment
-        comment = _format_comment(verdict, "t_test", 1)
-        assert "talos/fake_branch" not in comment, (
-            f"Unverified branch in comment: {comment}"
-        )
-
-    def test_verified_branch_appears_in_comment(self, tmp_path):
-        """require_push=true + branch verified via API → branch appears in comment."""
-        from talos.executor.finalize import _format_comment
-
-        verdict = Verdict(
-            status="pass",
-            summary="Done",
-            artifacts=[
-                {
-                    "kind": "git_branch",
-                    "repo": "https://hgit.example.com/group/repo.git",
-                    "branch": "talos/verified_branch",
-                    "sha": "abc123def456",
-                }
+            deliverables=[
+                DeliverableSpec(kind="git_branch", repo=INJECTED_REPO, branch=INJECTED_BRANCH),
             ],
         )
 
+        # API returns a sha for the injected branch (branch exists on correct repo)
+        with patch("talos.executor.adjudicate._gitlab_branch_sha", return_value=API_SHA), \
+             patch("talos.executor.adjudicate._check_ci") as mock_ci:
+            mock_ci.return_value = ([], [])
+            verdict = adjudicate("t_test", 1, bundle, decl)
+
+        # 1. FAKE_REPO must not appear in any verdict artifact
+        for art in verdict.artifacts:
+            if isinstance(art, dict) and art.get("kind") == "git_branch":
+                assert art.get("repo") != FAKE_REPO, (
+                    f"Fake repo leaked into verdict.artifacts: {art}"
+                )
+
+        # 2. FAKE_REPO must not appear in comment
+        from talos.executor.finalize import _format_comment
         comment = _format_comment(verdict, "t_test", 1)
-        assert "talos/verified_branch" in comment, (
-            f"Verified branch missing from comment: {comment}"
+        assert FAKE_REPO not in comment, (
+            f"Fake repo appeared in comment: {comment}"
+        )
+
+        # 3. If there IS a verified git_branch artifact, its repo must be INJECTED_REPO
+        git_arts = [a for a in verdict.artifacts if isinstance(a, dict) and a.get("kind") == "git_branch"]
+        for ga in git_arts:
+            assert ga["repo"] == INJECTED_REPO, f"Expected injected repo, got {ga['repo']}"
+            assert ga["branch"] == INJECTED_BRANCH, f"Expected injected branch, got {ga['branch']}"
+
+    def test_nonexistent_branch_not_in_verdict(self, tmp_path):
+        """容器自报一个不存在的分支 → 不进 verdict.artifacts，不进评论。"""
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        artifact_file = ws / "src" / "feature.py"
+        artifact_file.parent.mkdir(parents=True)
+        artifact_file.write_text("def feature():\n    return 'hello world'\n")
+
+        INJECTED_REPO = "https://gitlab.example.com/test/repo.git"
+        INJECTED_BRANCH = "talos/nonexistent"
+
+        bundle = make_bundle(
+            tmp_path,
+            result_json={
+                "schema": 1,
+                "status": "done",
+                "summary": "Done",
+                "artifacts": [
+                    {
+                        "kind": "git_branch",
+                        "repo": INJECTED_REPO,
+                        "branch": INJECTED_BRANCH,
+                        "sha": "self_reported_sha",
+                    }
+                ],
+            },
+            workspace_path=ws,
+        )
+        decl = make_decl(
+            artifacts=[ArtifactSpec(path="${workspace}/src/feature.py", min_bytes=10)],
+            git=GitSpec(branch=INJECTED_BRANCH, require_push=True),
+            verification=VerificationSpec(required=False, source="none"),
+            deliverables=[
+                DeliverableSpec(kind="git_branch", repo=INJECTED_REPO, branch=INJECTED_BRANCH),
+            ],
+        )
+
+        # API returns None - branch doesn't exist
+        with patch("talos.executor.adjudicate._gitlab_branch_sha", return_value=None), \
+             patch("talos.executor.adjudicate._check_ci") as mock_ci:
+            mock_ci.return_value = ([], [])
+            verdict = adjudicate("t_test", 1, bundle, decl)
+
+        # No git_branch artifacts in verdict
+        git_arts = [a for a in verdict.artifacts if isinstance(a, dict) and a.get("kind") == "git_branch"]
+        assert len(git_arts) == 0, (
+            f"Nonexistent branch leaked into verdict: {git_arts}"
+        )
+
+        # Not in comment as a verified branch link
+        from talos.executor.finalize import _format_comment
+        comment = _format_comment(verdict, "t_test", 1)
+        # The branch may appear in problems (legitimate), but must NOT appear
+        # as a verified branch link (the "分支: .../-/tree/..." line).
+        assert "/-/tree/" not in comment, (
+            f"Nonexistent branch appeared as verified link in comment: {comment}"
+        )
+
+    def test_verified_artifact_uses_injected_values_not_result_json(self, tmp_path):
+        """验证通过时，verdict.artifacts 里的 repo/branch/sha 三个值分别等于
+        注入值、注入值、API 返回值 - 而不是 result.json 里的值。
+        用故意写错的 result.json 来区分。
+        """
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        artifact_file = ws / "src" / "feature.py"
+        artifact_file.parent.mkdir(parents=True)
+        artifact_file.write_text("def feature():\n    return 'hello world'\n")
+
+        INJECTED_REPO = "https://gitlab.example.com/CORRECT/repo.git"
+        INJECTED_BRANCH = "talos/t_test"
+        API_SHA = "api_returned_sha_aaa"
+
+        # result.json deliberately has WRONG values for all three
+        bundle = make_bundle(
+            tmp_path,
+            result_json={
+                "schema": 1,
+                "status": "done",
+                "summary": "Done",
+                "artifacts": [
+                    {
+                        "kind": "git_branch",
+                        "repo": "https://gitlab.example.com/WRONG/repo.git",
+                        "branch": "talos/wrong_branch",
+                        "sha": "wrong_sha_000",
+                    }
+                ],
+            },
+            workspace_path=ws,
+        )
+        decl = make_decl(
+            artifacts=[ArtifactSpec(path="${workspace}/src/feature.py", min_bytes=10)],
+            git=GitSpec(branch=INJECTED_BRANCH, require_push=True),
+            verification=VerificationSpec(required=False, source="none"),
+            deliverables=[
+                DeliverableSpec(kind="git_branch", repo=INJECTED_REPO, branch=INJECTED_BRANCH),
+            ],
+        )
+
+        with patch("talos.executor.adjudicate._gitlab_branch_sha", return_value=API_SHA), \
+             patch("talos.executor.adjudicate._check_ci") as mock_ci:
+            mock_ci.return_value = ([], [])
+            verdict = adjudicate("t_test", 1, bundle, decl)
+
+        git_arts = [a for a in verdict.artifacts if isinstance(a, dict) and a.get("kind") == "git_branch"]
+        assert len(git_arts) == 1, f"Expected 1 verified git_branch, got {len(git_arts)}: {git_arts}"
+
+        ga = git_arts[0]
+        assert ga["repo"] == INJECTED_REPO, (
+            f"repo should be injected value, got {ga['repo']}"
+        )
+        assert ga["branch"] == INJECTED_BRANCH, (
+            f"branch should be injected value, got {ga['branch']}"
+        )
+        assert ga["sha"] == API_SHA, (
+            f"sha should be API value, got {ga['sha']}"
+        )
+
+    def test_self_reported_artifacts_stored_separately(self, tmp_path):
+        """非 git_branch 的自报 artifact 不进 verdict.artifacts，
+        而是进 verdict.self_reported_artifacts（明确标注未经验证）。
+        """
+        ws = tmp_path / "workspace"
+        ws.mkdir()
+        artifact_file = ws / "src" / "feature.py"
+        artifact_file.parent.mkdir(parents=True)
+        artifact_file.write_text("def feature():\n    return 'hello world'\n")
+
+        INJECTED_REPO = "https://gitlab.example.com/test/repo.git"
+        INJECTED_BRANCH = "talos/t_test"
+        API_SHA = "real_sha"
+
+        bundle = make_bundle(
+            tmp_path,
+            result_json={
+                "schema": 1,
+                "status": "done",
+                "summary": "Done",
+                "artifacts": [
+                    {"kind": "file", "path": "/work/src/feature.py"},
+                    {
+                        "kind": "git_branch",
+                        "repo": INJECTED_REPO,
+                        "branch": INJECTED_BRANCH,
+                        "sha": "self_reported_sha",
+                    },
+                ],
+            },
+            workspace_path=ws,
+        )
+        decl = make_decl(
+            artifacts=[ArtifactSpec(path="${workspace}/src/feature.py", min_bytes=10)],
+            git=GitSpec(branch=INJECTED_BRANCH, require_push=True),
+            verification=VerificationSpec(required=False, source="none"),
+            deliverables=[
+                DeliverableSpec(kind="git_branch", repo=INJECTED_REPO, branch=INJECTED_BRANCH),
+            ],
+        )
+
+        with patch("talos.executor.adjudicate._gitlab_branch_sha", return_value=API_SHA), \
+             patch("talos.executor.adjudicate._check_ci") as mock_ci:
+            mock_ci.return_value = ([], [])
+            verdict = adjudicate("t_test", 1, bundle, decl)
+
+        # verdict.artifacts should ONLY contain verified git_branch
+        assert len(verdict.artifacts) == 1, (
+            f"Expected 1 verified artifact, got {len(verdict.artifacts)}: {verdict.artifacts}"
+        )
+        assert verdict.artifacts[0]["kind"] == "git_branch"
+
+        # self_reported_artifacts should contain the original result.json artifacts
+        assert hasattr(verdict, "self_reported_artifacts"), "Verdict missing self_reported_artifacts field"
+        assert len(verdict.self_reported_artifacts) == 2, (
+            f"Expected 2 self-reported artifacts, got {len(verdict.self_reported_artifacts)}"
         )
 
 

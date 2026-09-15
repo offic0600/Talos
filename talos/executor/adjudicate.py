@@ -53,6 +53,7 @@ class Verdict:
     result_status: Optional[str] = None  # from result.json: done|blocked|failed
     summary: str = ""
     artifacts: list[dict] = field(default_factory=list)
+    self_reported_artifacts: list[dict] = field(default_factory=list)
     subtasks: list[dict] = field(default_factory=list)
     request_review: bool = False
     comments: list[str] = field(default_factory=list)
@@ -66,6 +67,7 @@ class Verdict:
             "result_status": self.result_status,
             "summary": self.summary[:2000],
             "artifacts": self.artifacts,
+            "self_reported_artifacts": self.self_reported_artifacts,
             "subtasks": self.subtasks,
             "request_review": self.request_review,
             "comments": self.comments,
@@ -75,7 +77,7 @@ class Verdict:
 
 # ── Individual checks ────────────────────────────────────────────────────
 
-def check_result_file(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], list[str]]:
+def check_result_file(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], list[str], list[dict]]:
     """Check result.json exists, is valid JSON, schema=1, status≠failed (§6)."""
     problems: list[str] = []
     defects: list[str] = []
@@ -86,16 +88,16 @@ def check_result_file(decl: Declaration, bundle: CollectedBundle) -> tuple[list[
             problems.append(f"结果文件不合法: {bundle.result_raw or 'parse error'}")
         else:
             problems.append("结果文件缺失: /task/out/result.json")
-        return problems, defects
+        return problems, defects, []
 
     data = bundle.result_json
     if data.get("status") == "failed":
         problems.append(f"结果文件 status=failed: {data.get('summary', '')[:200]}")
 
-    return problems, defects
+    return problems, defects, []
 
 
-def check_artifacts(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], list[str]]:
+def check_artifacts(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], list[str], list[dict]]:
     """Check declared artifacts exist and meet min_bytes (§6)."""
     problems: list[str] = []
     defects: list[str] = []
@@ -131,10 +133,10 @@ def check_artifacts(decl: Declaration, bundle: CollectedBundle) -> tuple[list[st
         if not found:
             problems.append(f"产物缺失: {art_path}")
 
-    return problems, defects
+    return problems, defects, []
 
 
-def check_git_pushed(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], list[str]]:
+def check_git_pushed(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], list[str], list[dict]]:
     """Check git branch exists on remote and sha matches self-report (§6, I4).
 
     Uses GitLab API ``_gitlab_branch_sha`` — the authoritative source, not
@@ -144,31 +146,31 @@ def check_git_pushed(decl: Declaration, bundle: CollectedBundle) -> tuple[list[s
     defects: list[str] = []
 
     if not decl.git.require_push or not decl.git.branch:
-        return problems, defects
+        return problems, defects, []
 
     # I11: repo URL from injected declaration deliverables, NOT result.json
     repo_url = _get_injected_repo(decl)
     if not repo_url:
         # No repo declared — skip git check
-        return problems, defects
+        return problems, defects, []
 
     branch = decl.git.branch
     project_id = _project_id_from_url(repo_url)
     if not project_id:
         defects.append(f"无法从 URL 解析项目: {repo_url}")
-        return problems, defects
+        return problems, defects, []
 
     try:
         remote_sha = _gitlab_branch_sha(project_id, branch)
     except RuntimeError:
         # API unreachable/auth failure → defect (degraded), NOT "branch not found"
         defects.append(f"仓库不可达: {repo_url}")
-        return problems, defects
+        return problems, defects, []
 
     if remote_sha is None:
         # Branch doesn't exist (repo is reachable since _gitlab_branch_sha didn't raise)
         problems.append(f"分支不存在: {branch} on {repo_url}")
-        return problems, defects
+        return problems, defects, []
 
     # Compare with self-reported sha
     self_sha = _get_self_reported_sha(bundle, branch)
@@ -194,10 +196,21 @@ def check_git_pushed(decl: Declaration, bundle: CollectedBundle) -> tuple[list[s
                 problems.append("自报绑定与任务不符")
                 break
 
-    return problems, defects
+    # P0-2: Construct verified artifact from injected values + API sha.
+    # Three values all come from executor (not result.json):
+    #   repo   = injected deliverable repo
+    #   branch = injected declaration branch
+    #   sha    = GitLab API response
+    verified = [{
+        "kind": "git_branch",
+        "repo": repo_url,
+        "branch": branch,
+        "sha": remote_sha,
+    }]
+    return problems, defects, verified
 
 
-def check_verification(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], list[str]]:
+def check_verification(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], list[str], list[dict]]:
     """Check verification source (§6).
 
     - ``ci``: GitLab pipelines API, poll to terminal state
@@ -208,31 +221,34 @@ def check_verification(decl: Declaration, bundle: CollectedBundle) -> tuple[list
     defects: list[str] = []
 
     if not decl.verification.required:
-        return problems, defects
+        return problems, defects, []
 
     source = decl.verification.source
 
     if source == "none":
-        return problems, defects
+        return problems, defects, []
 
     if source == "ci":
-        return _check_ci(decl, bundle)
+        p, d = _check_ci(decl, bundle)
+        return p, d, []
     elif source == "evidence":
-        return _check_evidence(decl, bundle)
+        p, d = _check_evidence(decl, bundle)
+        return p, d, []
     else:
         # Unknown source — defect
         defects.append(f"未知验证来源: {source}")
-        return problems, defects
+        return problems, defects, []
 
 
-def check_deliverables(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], list[str]]:
+def check_deliverables(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], list[str], list[dict]]:
     """Check declared deliverables (§6).
 
-    - ``git_branch``: ls-remote confirms branch exists + sha matches
+    - ``git_branch``: GitLab API confirms branch exists + sha matches
     - ``platform_attachment``: file exists (third batch does actual upload)
     """
     problems: list[str] = []
     defects: list[str] = []
+    verified_artifacts_list: list[dict] = []
 
     for dl in decl.deliverables:
         if dl.kind == "git_branch":
@@ -253,6 +269,13 @@ def check_deliverables(decl: Declaration, bundle: CollectedBundle) -> tuple[list
                     problems.append(
                         f"交付 sha 不匹配: 自报 {self_sha[:12]}, 远端 {remote_sha[:12]}"
                     )
+                # P0-2: construct verified artifact from injected + API values
+                verified_artifacts_list.append({
+                    "kind": "git_branch",
+                    "repo": dl.repo,
+                    "branch": dl.branch,
+                    "sha": remote_sha,
+                })
 
         elif dl.kind == "platform_attachment":
             # Check file exists in workspace or out
@@ -274,7 +297,7 @@ def check_deliverables(decl: Declaration, bundle: CollectedBundle) -> tuple[list
             if not found:
                 problems.append(f"交付文件不存在: {path}")
 
-    return problems, defects
+    return problems, defects, verified_artifacts_list
 
 
 # ── CI verification ──────────────────────────────────────────────────────
@@ -671,11 +694,14 @@ def adjudicate(
         ("deliverables", check_deliverables),
     ]
 
+    verified_artifacts: list[dict] = []
+
     for idx, (check_name, check_fn) in enumerate(checks):
         try:
-            p, d = check_fn(decl, bundle)
+            p, d, va = check_fn(decl, bundle)
             problems.extend(p)
             defects.extend(d)
+            verified_artifacts.extend(va)
         except Exception as e:
             checker_error = f"{check_name}: {e}"
             checks_run = [c[0] for c in checks[:idx + 1]]
@@ -686,7 +712,7 @@ def adjudicate(
     # Extract result.json fields for the verdict
     result_status = None
     summary = ""
-    artifacts = []
+    self_reported_artifacts = []
     subtasks = []
     request_review = False
     comments = []
@@ -694,7 +720,7 @@ def adjudicate(
         data = bundle.result_json
         result_status = data.get("status")
         summary = data.get("summary", "")[:2000]
-        artifacts = data.get("artifacts", [])
+        self_reported_artifacts = data.get("artifacts", [])
         subtasks = data.get("subtasks", [])
         request_review = bool(data.get("request_review", False))
         comments = data.get("comments", [])
@@ -716,35 +742,21 @@ def adjudicate(
     else:
         status = "pass"
 
-    # P0-2: filter artifacts to only verified git_branch entries.
-    # 容器在 result.json 里自报的 git_branch 可能根本不存在于远端。
-    # 评论和 verdict 只保留裁决器通过 GitLab API 确认过的制品。
-    verified_artifacts = []
-    for art in artifacts:
-        if not isinstance(art, dict):
-            continue
-        if art.get("kind") == "git_branch":
-            # Only include if check_git_pushed / check_deliverables verified it.
-            # A git_branch artifact is verified when:
-            # 1. require_push=True AND no "分支不存在" / "sha 不匹配" problem for that branch
-            # 2. The branch was confirmed via GitLab API (no defect about repo unreachable)
-            branch = art.get("branch", "")
-            repo = art.get("repo", "")
-            # Check if any problem or defect mentions this branch as missing/mismatched
-            branch_issues = [
-                p for p in problems if branch in p and ("不存在" in p or "不匹配" in p or "不符" in p)
-            ] + [
-                d for d in defects if repo in d and "不可达" in d
-            ]
-            if branch_issues:
-                continue  # Skip unverified artifact
-            # Also skip if require_push=False (not verified by any check)
-            if not decl.git.require_push:
+    # P0-2: verdict.artifacts contains ONLY artifacts constructed by check
+    # functions from injected values + API responses. Nothing from result.json.
+    # result.json self-reported artifacts go to self_reported_artifacts for
+    # archival, clearly marked as unverified.
+    # Deduplicate: check_git_pushed and check_deliverables may both verify
+    # the same branch — keep only one copy per unique (repo, branch).
+    seen = set()
+    deduped_artifacts = []
+    for art in verified_artifacts:
+        if isinstance(art, dict) and art.get("kind") == "git_branch":
+            key = (art.get("repo", ""), art.get("branch", ""))
+            if key in seen:
                 continue
-            verified_artifacts.append(art)
-        else:
-            # Non-git_branch artifacts (file, etc.) — pass through, not in comment
-            verified_artifacts.append(art)
+            seen.add(key)
+        deduped_artifacts.append(art)
 
     verdict = Verdict(
         status=status,
@@ -752,7 +764,8 @@ def adjudicate(
         defects=defects,
         result_status=result_status,
         summary=summary,
-        artifacts=verified_artifacts,
+        artifacts=deduped_artifacts,
+        self_reported_artifacts=self_reported_artifacts,
         subtasks=subtasks,
         request_review=request_review,
         comments=comments,
