@@ -1,0 +1,77 @@
+# Talos — docker-compose for local development and single-machine deployment
+#
+# Services:
+#   - talos-executor: the autonomous executor (tick loop)
+#   - elasticsearch:  trace storage (receives forwarded JSONL)
+#   - gitlab-runner:   local CI runner for pipeline-based adjudication
+#
+# Usage:
+#   cp talos.env.template .env && edit .env
+#   docker compose up -d
+
+version: "3.8"
+
+services:
+  talos-executor:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: talos-executor
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      # Kanban database (read-write for executor — the ONLY writer)
+      - talos-kanban:/home/talos/.hermes/kanban
+      # Trace staging/archive
+      - talos-trace:/home/talos/.hermes/trace
+      # Task directories (context, creds, out)
+      - talos-tasks:/home/talos/.hermes/talos/tasks
+      # Docker socket (executor needs to spawn worker containers)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Managed config (skills, plugins, config.yaml)
+      - /etc/hermes/config.yaml:/etc/hermes/config.yaml:ro
+      # Skills (read-only)
+      - /etc/hermes/skills:/etc/hermes/skills:ro
+      # Plugins (read-only)
+      - /etc/hermes/plugins:/etc/hermes/plugins:ro
+    networks:
+      - talos-net
+    depends_on:
+      - elasticsearch
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    container_name: talos-elasticsearch
+    restart: always
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - talos-es-data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+    networks:
+      - talos-net
+
+  gitlab-runner:
+    image: gitlab/gitlab-runner:latest
+    container_name: talos-gitlab-runner
+    restart: always
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - talos-runner-config:/etc/gitlab-runner
+    networks:
+      - talos-net
+
+volumes:
+  talos-kanban:
+  talos-trace:
+  talos-tasks:
+  talos-es-data:
+  talos-runner-config:
+
+networks:
+  talos-net:
+    driver: bridge
