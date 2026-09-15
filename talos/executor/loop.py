@@ -29,6 +29,7 @@ from talos.executor.constants import (
     DEFAULT_FAILURE_LIMIT,
     EXECUTOR_AUTHOR,
     TALOS_HOME,
+    TALOS_MAX_SPAWN,
     TICK_INTERVAL,
     log_event,
 )
@@ -258,6 +259,7 @@ def _dispatch(conn: Any, spawn_fn: Any) -> None:
             conn,
             spawn_fn=spawn_fn,
             failure_limit=DEFAULT_FAILURE_LIMIT,
+            max_spawn=TALOS_MAX_SPAWN,
         )
         if result.spawned:
             for task_id, assignee, workspace in result.spawned:

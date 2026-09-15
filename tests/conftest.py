@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
 
 import pytest
+
+# Guard: refuse to run against the real kanban DB unless explicitly opted in.
+if os.environ.get("HERMES_KANBAN_DB") and not os.environ.get("TALOS_TEST_ALLOW_REAL_DB"):
+    pytest.skip(
+        "HERMES_KANBAN_DB is set — refusing to run tests against a real DB. "
+        "Unset it or set TALOS_TEST_ALLOW_REAL_DB=1 to override.",
+        allow_module_level=True,
+    )
 
 # Ensure project root is importable
 TALOS_ROOT = Path(__file__).resolve().parent.parent

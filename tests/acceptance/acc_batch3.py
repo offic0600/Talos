@@ -116,8 +116,8 @@ def manual_dispatch(tid):
     max_run = conn.execute("SELECT MAX(id) FROM task_runs").fetchone()[0] or 0
     run_id = max_run + 1
     # Update task
-    conn.execute("UPDATE tasks SET status='running', current_run_id=?, started_at=?, claim_lock=?, claim_expires=?",
-                 (run_id, int(time.time()), "talos-acceptance", int(time.time()) + 300))
+    conn.execute("UPDATE tasks SET status='running', current_run_id=?, started_at=?, claim_lock=?, claim_expires=? WHERE id=?",
+                 (run_id, int(time.time()), "talos-acceptance", int(time.time()) + 300, tid))
     # Create task_runs entry
     conn.execute("INSERT INTO task_runs (id, task_id, status, started_at) VALUES (?, ?, 'running', ?)",
                  (run_id, tid, int(time.time())))

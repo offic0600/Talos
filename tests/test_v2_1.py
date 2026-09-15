@@ -523,3 +523,40 @@ class TestContainerConfigTemplate:
         assert "glpat-super-secret-key-12345" not in content
         # key_env should only contain the env var *name*, not the value
         assert "key_env: API_SERVER_KEY" in content
+
+
+class TestDispatchSafety:
+    """Regression tests for fork-bomb prevention (RCA §三)."""
+
+    def test_manual_dispatch_has_where_clause(self):
+        """_manual_dispatch in test_adjudicate_flow.py must use WHERE id=?."""
+        import inspect
+        from tests.integration.test_adjudicate_flow import _manual_dispatch
+        src = inspect.getsource(_manual_dispatch)
+        assert "WHERE id=?" in src, (
+            "_manual_dispatch UPDATE must have WHERE id=? to prevent "
+            "cross-contamination of other tasks"
+        )
+
+    def test_max_spawn_passed_to_dispatch_once(self):
+        """loop._dispatch must pass max_spawn to prevent unbounded fan-out."""
+        import inspect
+        from talos.executor.loop import _dispatch
+        src = inspect.getsource(_dispatch)
+        assert "max_spawn" in src, (
+            "_dispatch must pass max_spawn= to dispatch_once"
+        )
+
+    def test_talos_max_spawn_default(self):
+        """TALOS_MAX_SPAWN defaults to 2."""
+        from talos.executor.constants import TALOS_MAX_SPAWN
+        assert TALOS_MAX_SPAWN == 2, f"Expected default 2, got {TALOS_MAX_SPAWN}"
+
+    def test_conftest_guard_against_real_db(self):
+        """conftest.py must skip when HERMES_KANBAN_DB is set."""
+        import inspect
+        import tests.conftest as conftest
+        src = inspect.getsource(conftest)
+        assert "HERMES_KANBAN_DB" in src and "pytest.skip" in src, (
+            "conftest.py must guard against running tests on the real DB"
+        )

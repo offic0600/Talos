@@ -72,6 +72,11 @@ EXECUTOR_AUTHOR = "talos-executor"
 #: Failures before auto-block (matches kernel DEFAULT_FAILURE_LIMIT).
 DEFAULT_FAILURE_LIMIT = 2
 
+#: Max concurrent spawned containers per tick (prevents fork-bomb on large
+#: ready backlogs). Override via TALOS_MAX_SPAWN env var.
+import os as _os
+TALOS_MAX_SPAWN = int(_os.environ.get("TALOS_MAX_SPAWN", "2"))
+
 #: Block recurrence limit (matches kernel BLOCK_RECURRENCE_LIMIT).
 BLOCK_RECURRENCE_LIMIT = 2
 
