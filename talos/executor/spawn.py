@@ -327,6 +327,24 @@ def _build_docker_command(
         "--entrypoint", "sh",
     ]
 
+    # Host forwarding for VPN-internal model gateways (macOS Docker Desktop).
+    # Docker Desktop runs containers in a Linux VM that cannot access the host's
+    # VPN interfaces.  TALOS_HOST_FORWARD is a comma-separated list of
+    # "hostname:host.docker.internal:port" entries.  When set, --add-host maps
+    # each hostname to Docker's host-gateway (the special token "host-gateway"
+    # resolves to the Docker host IP inside the container, e.g. 192.168.65.254)
+    # so the container can reach a TCP forwarder running on the host.
+    host_forward = os.environ.get("TALOS_HOST_FORWARD", "")
+    if host_forward:
+        for entry in host_forward.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            parts = entry.split(":")
+            if len(parts) == 3:
+                hostname = parts[0]
+                cmd.extend(["--add-host", f"{hostname}:host-gateway"])
+
     for e in env:
         cmd.extend(["-e", e])
 
