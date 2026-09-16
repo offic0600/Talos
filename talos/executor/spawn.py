@@ -240,6 +240,17 @@ def _build_env(task: Any, decl: Declaration, creds: dict, repo_url: str) -> list
         if val:
             env.append(f"{key}={val}")
 
+    # NO_PROXY — Docker Desktop intercepts container HTTPS traffic via a built-in
+    # proxy (http.docker.internal:3128).  That proxy breaks TLS to internal IPs,
+    # causing SSLEOFError when the worker tries to reach an on-prem model gateway.
+    # Setting NO_PROXY/no_proxy tells the container's HTTP libraries to bypass the
+    # proxy for the listed hosts.  The value is read from the deployment env file
+    # (TALOS_NO_PROXY) so no internal domain is hardcoded in source.
+    no_proxy = os.environ.get("TALOS_NO_PROXY")
+    if no_proxy:
+        env.append(f"NO_PROXY={no_proxy}")
+        env.append(f"no_proxy={no_proxy}")
+
     return env
 
 

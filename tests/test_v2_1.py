@@ -526,6 +526,61 @@ class TestContainerConfigTemplate:
         assert "key_env: API_SERVER_KEY" in content
 
 
+class TestNoProxyPassthrough:
+    """Container env must include NO_PROXY from TALOS_NO_PROXY (v2.3 fix).
+
+    Docker Desktop's built-in proxy breaks TLS to internal IPs.  The executor
+    reads TALOS_NO_PROXY from the deployment env file and passes it to the
+    container as NO_PROXY / no_proxy.  No internal domain is hardcoded in source.
+    """
+
+    def _make_task(self):
+        """Minimal stand-in object with the attributes _build_env reads."""
+        class FakeTask:
+            id = "t_test01"
+            current_run_id = 1
+            tenant = None
+            skills = []
+        return FakeTask()
+
+    def _make_decl(self):
+        class FakeDecl:
+            class resources:
+                memory_mb = 512
+                cpus = 1
+            class git:
+                branch = "talos/t_test01"
+        return FakeDecl()
+
+    def test_no_proxy_included_when_set(self, monkeypatch):
+        """TALOS_NO_PROXY set → container env has NO_PROXY and no_proxy."""
+        monkeypatch.setenv("TALOS_NO_PROXY", "mgallery.haier.net,hgit.haier.net")
+        from talos.executor.spawn import _build_env
+        env = _build_env(self._make_task(), self._make_decl(), {}, "https://example.com/repo.git")
+        env_dict = dict(e.split("=", 1) for e in env)
+        assert env_dict["NO_PROXY"] == "mgallery.haier.net,hgit.haier.net"
+        assert env_dict["no_proxy"] == "mgallery.haier.net,hgit.haier.net"
+
+    def test_no_proxy_absent_when_unset(self, monkeypatch):
+        """TALOS_NO_PROXY unset → container env has no NO_PROXY."""
+        monkeypatch.delenv("TALOS_NO_PROXY", raising=False)
+        from talos.executor.spawn import _build_env
+        env = _build_env(self._make_task(), self._make_decl(), {}, "https://example.com/repo.git")
+        env_keys = [e.split("=")[0] for e in env]
+        assert "NO_PROXY" not in env_keys
+        assert "no_proxy" not in env_keys
+
+    def test_no_proxy_value_from_config_not_hardcoded(self, monkeypatch):
+        """NO_PROXY value comes from TALOS_NO_PROXY, not from source code."""
+        monkeypatch.setenv("TALOS_NO_PROXY", "custom-internal-host.local")
+        from talos.executor.spawn import _build_env
+        env = _build_env(self._make_task(), self._make_decl(), {}, "https://example.com/repo.git")
+        env_dict = dict(e.split("=", 1) for e in env)
+        assert env_dict["NO_PROXY"] == "custom-internal-host.local"
+        # Verify no hardcoded internal domain leaks in
+        assert "mgallery" not in env_dict["NO_PROXY"]
+
+
 class TestDispatchSafety:
     """Behavioral regression tests for fork-bomb prevention (RCA §三).
 
