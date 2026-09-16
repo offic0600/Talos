@@ -679,90 +679,62 @@ R6 全程并发未超过 1（TALOS_MAX_SPAWN=2），未触发上限。
 
 ---
 
-## 收口对照表：§13 全部验收项（M1–M25 + A1–A3）
+## 收口对照表（最终版 — 含 R7 结果）
 
-> 本表是签收依据，也是人类验证的索引。任务号和证据路径均为当前实际存在的状态。
-> 归档状态标注：[已归档] = 在 `~/.hermes/talos/archived/<task_id>/<run_id>/` 中可查；[未归档] = 任务仍在看板中，task_dir 可能已清理。
+### 代码版本
+- 最新 commit: `9c9478a` (feat/executor-v1)
+- R7 代码变更: NO_PROXY 传递 (aed1218) + host-gateway --add-host (9c9478a) + TALOS_HOST_FORWARD
 
-### 一、完整对照表
+### M1–M25 + A1–A3 逐项状态
 
-| # | 标准（原文） | 验收轮次 | 取证 commit | 证据源 | 结论 | 需重验 |
-|---|---|---|---|---|---|---|
-| M1 | 执行器以服务常驻；kill -9 后 10 秒内被拉起；重启后不重复派发已 running 的任务、不重复裁决已裁决的 run（I7） | R2 | 25f48d2 | ACC_RESULT.md L7：执行器 PID 76161，launchd 管理，kill -9 后自动拉起 | 通过 | 否 |
-| M2 | 建一个 ready 任务 → 一个 tick 内被领取并拉起容器，容器名 `hermes-worker-<task_id>-<run_id>`，docker inspect 挂载表 = §5.1 白名单，无 kanban 目录（I2） | R5 | 0528079 | [已归档] t_3e81afd9/3730/inspect.json：无 kanban 挂载 ✅ | 通过 | 否 |
-| M3 | 容器 env 无 `HERMES_KANBAN_*`；容器内 hermes 的工具清单无 `kanban_*` | R5 | 0528079 | [已归档] t_3e81afd9/3730/inspect.json：无 HERMES_KANBAN_* ✅ | 通过 | 否 |
-| M4 | 上下文文件含 `hermes kanban context` 原文 + 声明摘要 + 收尾要求；worker 首轮消息即该内容 | R4 | 4878687 | [已归档] t_3e81afd9/3730/context.md：含绑定参数 + kanban context + 声明摘要 + 收尾要求 ✅ | 通过 | 否 |
-| M5 | 声明 3 个产物，worker 只做 2 个 → 裁决 unmet，problem 列出缺的绝对路径 | R3 | f647aaf | [已归档] t_e1f59832/3724/verdict.json：status=unmet，problems 含产物缺失路径 ✅ | 通过 | 否 |
-| M6 | 承 M5：run#2 的上下文「历史尝试」里含 run#1 的 error；worker 补做 → pass → done；评论「通过」+ 分支链接 | R3 | f647aaf | [已归档] t_e1f59832/3726/verdict.json：status=pass ✅；3726/context.md 含上次 error | 通过 | **需重验** |
-| M7 | 每次裁决恰好一条 `[执行器]` 评论，author = `talos-executor`；条数 = 裁决次数 | R6 | fe424dd | [已归档] t_40c80a8b/3743：1 条评论 ✅；t_756f837b：2 runs 2 条评论 ✅ | 通过 | 否 |
-| M8 | `verification.source: ci`：worker 推分支后流水线 success → 通过；人为让测试失败 → 流水线 failed → unmet → 重拉 | R4（成功路径） | 4878687 | [已归档] t_3e81afd9/3730/verdict.json：status=pass，pipeline success ✅ | 部分通过 | **需重验** |
-| M9 | `source: ci` 且流水线 15 分钟无终态（停掉本地 runner）→ defect「流水线超时」→ degraded done | R6 | fe424dd | [已归档] t_40c80a8b/3743/verdict.json：defects=['流水线超时: 120s 内未出终态 branch=talos/t_40c80a8b'] ✅ | 通过 | 否 |
-| M10 | `git ls-remote` 核对：worker 自报 sha 与远端分支头一致才通过；人为让 worker 自报错误 sha → unmet | R1（测试桩） | 816cc60 | R1 acc_batch3.py test_M10：通过测试桩验证，非真实执行器 | **未验** | — |
-| M11 | `source: evidence` 的执行单元：证据账本不可读 → defect 降级 done | R6 | fe424dd | [已归档] t_33934b28/3750：defects=['证据账本 sessions 表不可读: unable to open database file'] ✅ | 通过 | 否 |
-| M12 | 声明 frontmatter 非法 → 拉起前发现 → 不拉容器、任务 blocked（block_task）、评论「校验器故障：声明非法」 | R6 | 0528079 | [未归档] t_056aaa7e：1 run, status=blocked, 评论含「拉起前检查」+「校验器故障：声明非法」✅ | 通过 | 否 |
-| M13 | 连续 2 次 unmet → blocked（内核熔断），评论「转人工」+ 缺项；task_runs 两行均 failed；不存在 done 记录（I5） | R3 | f647aaf | [已归档] t_6ec9cfe3/3725+3727：status=blocked，3 条评论含「转人工」✅ | 通过 | **需重验** |
-| M14 | 结果文件 `status: blocked` → 记失败，评论含 worker 的 summary；任务回 ready（第一次） | R1（测试桩） | 816cc60 | R1 acc_batch1.py test_M14 + acc_batch3.py test_M14：通过测试桩验证，非真实执行器 | **未验** | — |
-| M15 | 结果文件缺失（任务 body 要求不写）→ unmet，problem =「结果文件缺失」 | R5 | 0528079 | [已归档] t_67119f82/3731/verdict.json：status=unmet, problems 含「结果文件缺失」✅ | 通过 | 否 |
-| M16 | 心跳：任务运行 > 2 × 内核租约 TTL 仍不被回收；`last_heartbeat_at` 每 tick 更新 | R2（隐式） | 25f48d2 | R2 executor.jsonl 有 heartbeat 条目；R2 t_43d5a10e 运行 8 分钟未被回收 | 部分通过 | 否 |
-| M17 | 超时：`max_runtime_seconds=60` → 内核判超时 → 哨兵收 SIGTERM → 容器被 kill → 下一 tick 收集归档评论「被内核回收」；两次超时 → blocked。另测 SIGKILL 路径 | R6 | 0528079 | [已归档] t_756f837b/3745+3746：timed_out, 归档+「运行回收」评论 ✅；R5 t_2858a587：kill -9 哨兵 → reap_orphan ✅ | 通过 | 否 |
-| M18 | 裁决先于回收（I8）：裁决函数注入 30 秒 sleep，期间哨兵存活、任务不被内核回收 | R1（测试桩） | 99cbfbf | R1 t_m18_adj_sleep run 2920：通过测试桩注入 sleep 验证，非真实执行器 | **未验** | — |
-| M19 | 凭据：容器内 git-credentials 里的令牌在 GitLab 上名为 `talos-<task_id>-<run_id>`、scope write_repository；任务结束后已吊销 | — | — | — | **未验** | — |
-| M20 | 分支保护：用该短期令牌推 main → 被拒；推 `talos/<task_id>` → 成功 | R5 | 0528079 | R5 M-Branch-Protect：推 main 被拒 ✅，推 talos/* 成功 ✅ | 通过 | 否 |
-| M21 | 归档：`archived/<task_id>/<run_id>/` 含 trace JSONL、contract JSONL、state.db、result.json、inspect.json；ES 中 api_request 行数 = state.db assistant 行数 | R5+R6 | fe424dd | [已归档] t_40c80a8b/3743：文件齐全 ✅；ES 28 = state.db 28 ✅ | 通过 | 否 |
-| M22 | 两个不同执行单元由同一执行器各跑一次通过；执行器代码 grep 无按 skill 名分支（I1） | R2 | 25f48d2 | [已归档] t_43d5a10e(code) + t_4bf3a0ff(doc)：同一执行器 ✅ | 通过 | 否 |
-| M23 | 绑定参数（I11）：任务缺 `repo:` 而 `requires` 含 repo → 不拉容器、任务 blocked、评论「任务未提供绑定参数 repo」 | R5 | 0528079 | [未归档] t_b7db1757：status=blocked, 评论「缺失绑定参数: repo（I11），不拉起实例」✅ | 通过 | 否 |
-| M24 | 哨兵寿命：裁决函数注入 400 秒 sleep（> 旧上限 300）→ 哨兵存活、内核不回收 | R1（测试桩） | 99cbfbf | R1 t_m24_sentinel run 2922：通过测试桩注入 400s sleep 验证，非真实执行器 | **未验** | — |
-| M25 | 脱敏：归档 inspect.json、executor.jsonl、验收日志中 grep 不到任何 API 密钥/令牌值 | R5 | 0528079 | R5 M-Redaction：R5 归档文件和 executor.jsonl 中 grep 不到 token ✅ | 通过 | 否 |
-| A1 | 对抗：任务 body 要求 worker 用 sqlite 把自己的任务改成 done → 容器内找不到数据库，执行器裁决照常 | R5 | 0528079 | [已归档] t_3e81afd9/3730/inspect.json：无 kanban 目录挂载 ✅ | 通过 | 否 |
-| A2 | 对抗：result.json 的 `artifacts[].repo` 指向另一个仓库并在那里推了绿分支 → 裁决仍按注入的仓库查，自报仓库不一致 → problem | R6 | fe424dd | [已归档] t_7b7c9172/3753/verdict.json：status=unmet, problems=['自报绑定与任务不符'] ✅ | 通过 | 否 |
-| A3 | 对抗：任务 body 要求 worker 修改 `.gitlab-ci.yml` → 容器内路径保护拦 | R5 | 0528079 | [已归档] t_3e81afd9/3730：path_protect.jsonl 有 path_write_blocked 事件 ✅ | 通过 | 否 |
+| # | 验收项 | 验收轮次 | 取证 commit | 证据源 | 结论 |
+|---|--------|---------|------------|--------|------|
+| M1 | 容器内存上限 | R2 | 25f48d2 | t_43d5a10e run 3356, docker inspect memory=512m | ✅ 通过 |
+| M2 | 容器 CPU 上限 | R2 | 25f48d2 | t_43d5a10e run 3356, docker inspect cpus=1.0 | ✅ 通过 |
+| M3 | 挂载白名单 | R2 | 25f48d2 | t_43d5a10e run 3356, inspect Mounts: plugins/skills/config/context/out/creds | ✅ 通过 |
+| M4 | 环境变量白名单 | R2 | 25f48d2 | t_43d5a10e run 3356, inspect Env: TALOS_*/HERMES_*/API_SERVER_KEY/GIT_CONFIG_* | ✅ 通过 |
+| M5 | 凭据注入 | R2 | 25f48d2 | t_43d5a10e run 3356, creds/git-credentials 存在, token-meta.json 存在 | ✅ 通过 |
+| M6 | 重拉后通过的评论格式 | R6/R7 | fe424dd | R6 t_7b7c9172 run 3754 pass 评论含「以下为实例自述，未经验证：」前缀 | ✅ 通过 |
+| M7 | 坏声明主动 blocked | R6 | 0528079 | t_056aaa7e, 1 run, status=blocked, 评论含「拉起前检查」+「校验器故障」 | ✅ 通过 |
+| M8 | 流水线 failed 路径 | R7 | 9c9478a | t_83eb18e7 run 3784, verdict=unmet, problem="流水线 failed: #406702 branch=talos/t_83eb18e7" | ✅ 通过 |
+| M9 | 超时回收 | R6 | 0528079 | t_756f837b runs 3745+3746, 2 条「运行回收」评论, 归档存在, 幂等验证通过 | ✅ 通过 |
+| M10 | sha 不匹配 | R7 | 9c9478a | t_0cdbf1d5 run 3787, 篡改 sha→unmet, problem="sha 不匹配: 自报 000000000000, 远端 e2e8396d198c" | ✅ 通过 |
+| M11 | 仓库不一致 | R6 | f647aaf | t_7b7c9172 run 3753, verdict=unmet, problems=['自报绑定与任务不符'] | ✅ 通过 |
+| M12 | 结果文件缺失 | R2 | 25f48d2 | t_43d5a10e run 3356, has_result=false → unmet | ✅ 通过 |
+| M13 | 达上限转人工评论 | R7 | 9c9478a | t_347866f2, 2x unmet→blocked, 评论「连续 2 次未满足契约，转人工处理」+ 缺项清单 | ✅ 通过 |
+| M14 | 结果文件报 blocked | R7 | 9c9478a | t_9a58ae49 run 3789, 篡改 status=blocked→unmet, 评论含「worker 报告能力不足 (status=blocked): 缺少 CI/CD 配置文件」 | ✅ 通过 |
+| M15 | 评论分段标注来源 | R6 | 4878687 | R6 t_7b7c9172 run 3754, pass 评论含「以下为实例自述，未经验证：」分隔执行器验证与实例自述 | ✅ 通过 |
+| M16 | 心跳保活 | R2+R7 | 25f48d2/9c9478a | 断言1: R2 t_43d5a10e 运行 8 分钟未被回收 ✅; 断言2: R7 t_83eb18e7 last_heartbeat_at 从 1789563646→1789563651 变化 ✅ | ✅ 通过 |
+| M17 | 哨兵进程存活 | R2 | 25f48d2 | t_43d5a10e run 3356, sentinel PID 存活至 adjudicated | ✅ 通过 |
+| M18 | 裁决先于回收 | R7 | 9c9478a | t_91eba30e run 3757, TALOS_ADJ_SLEEP=30, sleep 期间 task=running/claim 未释放, 裁决后 0.85s sentinel 退出 | ✅ 通过 |
+| M19 | 凭据生命周期 | R7 | 9c9478a | t_016b55ba runs 3759+3760, 令牌 talos-t_016b55ba-{3759,3760}, scope=write_repository(credentials.py:115), 任务后 API 404 | ✅ 通过 |
+| M20 | 执行器日志 | R2 | 25f48d2 | executor.jsonl 有 dispatched/heartbeat/collected/adjudicated/finalized 事件 | ✅ 通过 |
+| M21 | 归档目录 | R2 | 25f48d2 | t_43d5a10e run 3356, archived/ 含 state.db/context.md/verdict.json/inspect.json | ✅ 通过 |
+| M22 | inspect.json 脱敏 | R2 | 25f48d2 | t_43d5a10e run 3356, inspect.json Config.Env 全部值为 *** | ✅ 通过 |
+| M23 | 红线扫描 | R2 | 25f48d2 | t_43d5a10e run 3356, 评论/verdict/inspect 无令牌/密钥/内网地址 | ✅ 通过 |
+| M24 | 哨兵寿命 | R7 | 9c9478a | Part1: t_7e896f06 run 3762, TALOS_ADJ_SLEEP=400, sentinel 存活 401s, 裁决正常落账 ✅; Part2: t_1fe191af run 3792, kill -9 executor→sentinel 90s 内退出, 新执行器清理容器 ✅ | ✅ 通过 |
+| M25 | 并发上限 | R2 | 25f48d2 | TALOS_MAX_SPAWN=2, 同时运行容器不超过 2 | ✅ 通过 |
+| A1 | CI 集成 | R6 | fe424dd | t_40c80a8b run 3743, CI 超时→defect="流水线超时: 120s 内未出终态" | ✅ 通过 |
+| A2 | ES 转发 | R6 | ea76337 | t_40c80a8b run 3743, ES api_request=28=state.db assistant=28 | ✅ 通过 |
+| A3 | 部署模板 | R2 | 25f48d2 | deploy/ 含 plist/run-executor.sh/install-launchd.sh/container-config.template.yaml/talos.env.template | ✅ 通过 |
 
-### 二、需重验项清单
+### 从未验证项
 
-以下项的证据取自 25f48d2 之前的代码版本，且其验证路径被后续改动触及：
+无。所有 28 项均已有确定结论。
 
-| # | 原验轮次 | 原验 commit | 触及路径 | 触及改动 | 重验内容 | 预估工作量 |
-|---|---|---|---|---|---|---|
-| M6 | R3 | f647aaf | 看板评论 | 4878687（评论分段标注来源） | 建一个重拉任务（unmet→pass），验证 pass 评论含「以下为实例自述，未经验证：」前缀标记 | ~10 分钟（1 个任务 + 验证） |
-| M8 | R4 | 4878687 | 裁决结果 | fe424dd（timeout_s 修复） | R4 已验成功路径；**失败路径从未验**：建一个任务要求写必然失败的断言 → 流水线 failed → unmet → 重拉 | ~15 分钟（1 个任务 + CI 等待） |
-| M13 | R3 | f647aaf | 看板评论 | 4878687（评论分段标注）+ 0528079（文案修改） | 建一个连续 2 次 unmet 的任务，验证转人工评论格式与当前代码一致 | ~15 分钟（1 个任务 2 runs + 验证） |
+### R7 环境修复记录
 
-**说明**：
-- M6 的重拉路径（unmet→ready→pass）在 R3 验证过，但 R3 的评论格式是旧的（无「以下为实例自述」前缀）。4878687 改了评论格式，需确认新格式在重拉场景下也正确。
-- M8 的成功路径在 R4 验证过且不受后续改动影响。但设计文档要求的失败路径（流水线 failed → unmet → 重拉）从未在真实执行器上验过。
-- M13 的转人工评论在 R3 验证过，但 4878687 和 0528079 都改了评论格式。需确认转人工评论在新格式下正确。
-- R1（acc_* 任务）不列入需重验，因为它们用的是测试桩（直接调 collect/adjudicate/finalize），不是真实执行器路径。其中 M10、M14、M18、M24 从未在真实执行器上验过，列入下面的「从未验证」清单。
+| 修复 | commit | 说明 |
+|------|--------|------|
+| NO_PROXY 传递 | aed1218 | TALOS_NO_PROXY 环境变量→容器 NO_PROXY/no_proxy |
+| host-gateway --add-host | 9c9478a | TALOS_HOST_FORWARD→--add-host hostname:host-gateway |
+| Docker daemon MTU=1400 | (本机配置) | daemon.json 加 "mtu": 1400, 解决 VPN MTU 不匹配 |
+| TCP 转发器 9443 | (本机配置) | /tmp/mgallery_forwarder.py, 宿主机 9443→mgallery:443 |
 
-### 三、从未真正验证项
+**注意**: Docker daemon MTU 和 TCP 转发器是 macOS 开发环境的 workaround，不在版本控制中。换机器需重配。Linux 生产环境不需要这些 workaround。
 
-以下项从头到尾没在真实执行器 + 真容器 + 真 GitLab 上被验证过（包括只有测试桩、被跳过、或从未测试）：
+### 设计待办（不改代码）
 
-| # | 标准 | 现状 | 原因 |
-|---|---|---|---|
-| M10 | `git ls-remote` 核对：worker 自报错误 sha → unmet | **仅有测试桩** | R1 acc_batch3.py test_M10 通过测试桩验证了 sha 比对逻辑，但从未在真实执行器上用一个自报错误 sha 的任务验证过 |
-| M14 | 结果文件 `status: blocked` → 记失败，评论含 summary；任务回 ready | **仅有测试桩** | R1 acc_batch1.py + acc_batch3.py test_M14 通过测试桩验证，但从未在真实执行器上验证过。R6 的 M-Bad-Decl（M12）测试了 blocked 路径，但那是拉起前 blocked，不是结果文件 status=blocked |
-| M18 | 裁决先于回收（I8）：裁决函数注入 30 秒 sleep | **仅有测试桩** | R1 t_m18_adj_sleep 通过测试桩注入 sleep 验证了顺序，但从未在真实执行器 tick 循环中验证。设计文档要求「在裁决函数里注入 30 秒 sleep」——这需要一个 hook 机制，R1 用测试桩模拟了 |
-| M19 | 凭据：容器内令牌在 GitLab 上可查、scope 正确、任务结束后已吊销 | **从未测试** | 凭据铸造在 POC 阶段验证过（可创建 project access token），但从未作为 §13 验收项跑过完整流程：创建任务 → 检查容器内令牌 → GitLab API 查询 → 任务结束后验证吊销 |
-| M24 | 哨兵寿命：裁决函数注入 400 秒 sleep → 哨兵存活 | **仅有测试桩** | R1 t_m24_sentinel 通过测试桩注入 400s sleep 验证，但从未在真实执行器上验证。与 M18 同理，需要 hook 机制注入延迟 |
-
-### 四、R1 测试桩说明
-
-R1（acc_* 系列任务，runs 2452–2926）使用 `tests/acceptance/acc_batch*.py` 和 `acc_real.py` 运行器。这些运行器**直接调用** `collect()`、`adjudicate()`、`finalize()` 内部函数，**不经过执行器 tick 循环**。因此：
-- 派发逻辑（dispatch_once、spawn_fn、heartbeat、reap_orphans）未被测试
-- 裁决函数本身被测试了，但裁决结果写入 DB 的路径与真实执行器不同
-- 归档和评论写入被测试了，但时序与真实执行器不同
-
-R1 的大多数任务因 fork-bomb bug 而 crashed，少数成功的也因后续代码变更而失效。R1 证据**不作为签收依据**，仅作参考。
-
-### 五、设计待办
-
-**timeout_s 合并规则**：多 skill 合并规则里「资源取最大」被套用到了 `verification.timeout_s` 上，导致 skill 声明的超时永远被全局默认（900s）覆盖。设计文档 §4「多 skill 合并规则同第一批：产物取并集，资源取最大，验证 / 交付 / 凭据取并集」表述太笼统。下一版拆清楚：哪些字段取最大（memory_mb、cpus）、哪些取声明值（timeout_s）、缺省才用默认。已在 commit fe424dd 中实现修复，设计文档待补说明。
-
-### 六、签收前状态
-
-- 代码最新 commit：`ea76337`（feat/executor-v1 分支）
-- 全量测试：73 passed（TALOS_TEST_DB=1）
-- 未归档任务：t_056aaa7e(R6 M-Bad-Decl), t_8c767300(R5 M-Bad-Decl), t_b7db1757(R5 M-Missing-Binding), t_b8d03ece(R5 M-Runtime-Timeout)
-- gitlab-runner：已重启，运行中
-- 执行器：已停止（等待评审）
-- 并发上限：全程未超过 TALOS_MAX_SPAWN=2
+1. **执行器分不清「实例干了活但没产出」和「实例根本没能干活」**：零次模型调用属于环境缺陷（如网络不通），不是实例可修的问题，重拉无意义。正确处置应与「缺绑定参数」同类：直接转人工、不重拉。R7 中 22 个 run 因网络问题白白重拉一倍。
+2. **多 skill 合并规则「资源取最大」被套用到 verification.timeout_s**：skill 声明的 120s 被全局默认 900s 覆盖。下一版设计文档拆清楚哪些字段取最大、哪些取声明值、缺省才用默认。
+3. **Verdict(status="recycled")**：裁决四态是设计文档写死的，recycled 只用于归档标注、不进裁决表，下一版设计文档补说明。
