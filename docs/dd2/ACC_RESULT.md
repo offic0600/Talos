@@ -942,3 +942,80 @@ EXIT_CODE=0
 1. **执行器分不清「实例干了活但没产出」和「实例根本没能干活」**：零次模型调用属于环境缺陷（如网络不通），不是实例可修的问题，重拉无意义。正确处置应与「缺绑定参数」同类：直接转人工、不重拉。R7 中 22 个 run 因网络问题白白重拉一倍。
 2. **多 skill 合并规则「资源取最大」被套用到 verification.timeout_s**：skill 声明的 120s 被全局默认 900s 覆盖。下一版设计文档拆清楚哪些字段取最大、哪些取声明值、缺省才用默认。
 3. **Verdict(status="recycled")**：裁决四态是设计文档写死的，recycled 只用于归档标注、不进裁决表，下一版设计文档补说明。
+
+---
+
+## §BOT-1 GitLab 机器人账号切换验证（2026-09-17）
+
+### 切换信息
+
+| 项目 | 值 |
+|------|-----|
+| 切换时间 | 2026-09-17 |
+| 机器人账号 | talos-bot (user_id=4702, name=赵晨的coding搭子) |
+| 项目角色 | Maintainer (access_level=40, 直接入组成员) |
+| 令牌 scope | api |
+| 令牌位置 | ~/.hermes/talos.env → TALOS_GITLAB_ADMIN_TOKEN |
+| 验证任务 | t_3f03761d |
+| 验证 run | 3810 |
+| 验证分支 | talos/t_3f03761d (commit dae7a962) |
+| Pipeline | #406825 (status=success) |
+
+### 验证结果
+
+#### Step 1: 执行器重启 + 自检 + 令牌泄漏扫描
+
+- 执行器重启：launchctl kickstart -k gui/501/com.talos.executor → PID 60401 ✅
+- 自检 6/6 通过：hermes_cli importable / docker image / kanban DB / GitLab reachable / skills / config render ✅
+- KANBAN_DB = /Users/zhaoc/.hermes/kanban/kanban.db（规范路径）✅
+- 令牌泄漏扫描：executor.jsonl / stdout / stderr 均无 glpat- 前缀、无长 hex 串、无令牌值 ✅
+- inspect.json 文件无 glpat- 前缀 ✅
+- executor.jsonl 中仅出现环境变量名 TALOS_GITLAB_ADMIN_TOKEN（旧错误消息），不出现值 ✅
+
+#### Step 2: 端到端任务验证
+
+| 验证项 | 结果 | 证据 |
+|--------|------|------|
+| 任务级令牌名称 | ✅ | talos-t_3f03761d-3810 (token_id=3920) |
+| 令牌 scope | ✅ | ['write_repository', 'read_repository'] |
+| 令牌角色 | ✅ | access_level=30 (Developer) |
+| 容器 clone + push | ✅ | 分支 talos/t_3f03761d 推送成功, commit dae7a962 |
+| 裁决器 GitLab API | ✅ | 分支查询 HTTP 200 (不是 401/403) |
+| 流水线 | ✅ | Pipeline #406825 status=success |
+| 裁决结果 | ✅ | verdict=pass → done |
+| 令牌吊销 | ✅ | 查询 HTTP 404 (已删除) |
+
+#### Step 3: GitLab 身份切换确认
+
+**3.1 新分支提交者/推送者**
+
+- Commit author: `talos[t_3f03761d]` <talos-worker@haier.net>
+- Commit committer: `talos[t_3f03761d]` <talos-worker@haier.net>
+- Push event（令牌吊销前捕获）: author_id=4705 (project bot user, NOT 911/ZhaoC)
+- 对比：main 分支 commit author = `01065417` <zhaoc@haier.com> (ZhaoC)
+- 结论：✅ 不是 ZhaoC
+
+**3.2 流水线触发者**
+
+- Pipeline #406825, source=push, status=success
+- Pipeline user（令牌吊销前捕获）: id=4705, username=project_16280_bot_1cee23d4d5dd904a17c7a05ed9db25c0
+- 结论：✅ 不是 ZhaoC
+
+**3.3 令牌签发操作者**
+
+- talos.env 中的令牌认证身份: talos-bot (id=4702, username=talos-bot)
+- talos-bot 是项目唯一直接入组成员 (access_level=40 Maintainer)
+- 项目访问令牌由 talos-bot 的 PAT 签发 → GitLab 创建 project bot user 4705
+- 结论：✅ 操作者是 talos-bot
+
+> 注：令牌吊销后 project bot user 4705 被 GitLab 自动 block，后续 API 查询不再返回该用户信息。这是 GitLab 正常行为，关键证据在令牌吊销前已捕获。
+
+### 历史分支说明
+
+切换前（2026-09-17 之前）推送的分支，其 commit author/committer 仍是当时的身份（ZhaoC 的 `01065417 <zhaoc@haier.com>` 或旧 bot 的 `talos-worker@haier.net`）。本次切换不会改变历史提交的作者信息。
+
+### 身份边界声明
+
+从此以后：
+- **GitLab 上 talos-bot 的动作 = AI 的动作**（执行器铸造令牌、推送分支、触发流水线）
+- **ZhaoC 账号的动作 = 人的动作**（代码审查、合并、手动操作）
