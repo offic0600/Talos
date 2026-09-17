@@ -240,6 +240,66 @@ def check_verification(decl: Declaration, bundle: CollectedBundle) -> tuple[list
         return problems, defects, []
 
 
+# ── Zero model-call check (设计侧方案 1) ──────────────────────────────────
+
+def check_model_calls(decl: Declaration, bundle: CollectedBundle) -> Optional[str]:
+    """检查实例是否至少有一次模型调用（助手消息）。
+
+    零次模型调用 = 实例根本没能开工 = 环境缺陷。
+    用 state.db 中的 messages 表计数 role='assistant' 的行数。
+    不用退出码判断——那次故障里退出码是 0。
+
+    Returns:
+        None — 检查通过（有助手消息或声明关闭了此检查）。
+        str — 判定成立的错误描述，用于评论和 block_task。
+    """
+    if not decl.requires_model_call:
+        return None
+
+    # state.db 路径：workspace 或 tdir 根下
+    state_db_candidates: list[Path] = []
+    if bundle.workspace_path:
+        state_db_candidates.append(bundle.workspace_path / "state.db")
+    state_db_candidates.append(bundle.tdir / "state.db")
+
+    state_db = None
+    for cand in state_db_candidates:
+        if cand.exists():
+            state_db = cand
+            break
+
+    if state_db is None:
+        # state.db 不存在 → 无法判定，不触发此检查
+        # （无 state.db 的场景由 check_verification 的 evidence 分支处理）
+        return None
+
+    try:
+        import sqlite3
+        conn = sqlite3.connect(str(state_db))
+        # 检查 messages 表是否存在
+        tables = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()]
+        if "messages" not in tables:
+            conn.close()
+            return None  # 无 messages 表，不触发
+
+        count = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE role = 'assistant'"
+        ).fetchone()[0]
+        conn.close()
+    except Exception:
+        # 读取失败 → 不触发，交给其他检查处理
+        return None
+
+    if count == 0:
+        return (
+            "实例未能启动（零次模型调用），疑似环境问题，"
+            "请优先检查容器到模型网关的网络与容器内配置"
+        )
+    return None
+
+
 def check_deliverables(decl: Declaration, bundle: CollectedBundle) -> tuple[list[str], list[str], list[dict]]:
     """Check declared deliverables (§6).
 
@@ -667,6 +727,26 @@ def adjudicate(
     Verdict: error (checker_error) > unmet (problems) > degraded (defects) > pass.
     """
     t0 = time.time()
+
+    # 设计侧方案 1：零次模型调用 → 环境缺陷 → instance_not_started
+    # 这个检查在所有其他 checks 之前执行。
+    # 理由：实例哪怕只说一句话也会留记录，一条都没有只可能是它没跑起来。
+    # 不用退出码判断——那次故障里退出码是 0。
+    instance_error = check_model_calls(decl, bundle)
+    if instance_error:
+        verdict = Verdict(
+            status="instance_not_started",
+            problems=[instance_error],
+            result_status=None,
+            metadata={
+                "exit_code": bundle.exit_code,
+                "checks_run": ["model_calls"],
+            },
+        )
+        log_event("adjudicated", task_id=task_id, run_id=run_id,
+                  duration_ms=(time.time() - t0) * 1000,
+                  extra={"verdict": "instance_not_started", "reason": instance_error})
+        return verdict
 
     # Test hook for M18/M24: inject sleep to verify sentinel survives adjudication
     _adj_sleep = os.environ.get("TALOS_ADJ_SLEEP")

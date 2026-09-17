@@ -66,6 +66,12 @@ def _format_comment(verdict: Verdict, task_id: str, run_id: int) -> str:
             parts.append("; ".join(verdict.defects[:5]))
         return "\n".join(parts)
 
+    elif verdict.status == "instance_not_started":
+        parts = [f"[执行器] 裁决(run {run_id})：⚠️ 实例未能启动"]
+        if verdict.problems:
+            parts.append("; ".join(verdict.problems[:5]))
+        return "\n".join(parts)
+
     return f"[执行器] 裁决(run {run_id}): {verdict.status}"
 
 
@@ -219,7 +225,25 @@ def finalize(
     kernel_ok = False
 
     # Route based on verdict
-    if verdict.status == "pass":
+    if verdict.status == "instance_not_started":
+        # 设计侧方案 1：零次模型调用 = 环境缺陷。
+        # 与「缺绑定参数」「坏声明」同类：直接转人工、不重拉、不消耗 retry 次数。
+        # 用 block_task 而不是 _record_task_failure。
+        error_msg = "; ".join(verdict.problems[:5])[:500]
+        try:
+            kb.block_task(
+                conn, task_id,
+                reason=error_msg,
+                kind="environment",
+            )
+            kernel_ok = True
+            new_status = "blocked"
+        except Exception as e:
+            log_event("error", task_id=task_id, run_id=run_id,
+                      msg=f"block_task (instance_not_started) failed: {e}")
+            new_status = "unknown"
+
+    elif verdict.status == "pass":
         # → done
         try:
             kernel_ok = kb.complete_task(

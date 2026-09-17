@@ -105,6 +105,10 @@ class Declaration:
     deliverables: list[DeliverableSpec] = field(default_factory=list)
     credentials: list[CredentialSpec] = field(default_factory=list)
     requires: list[str] = field(default_factory=list)  # I11: binding params this component needs
+    # 零次模型调用判为环境缺陷（设计侧方案 1）。
+    # True（默认）：助手消息为零 → instance_not_started → 直接转人工。
+    # False：留给纯脚本类执行组件，不触发此检查。
+    requires_model_call: bool = True
     raw: dict = field(default_factory=dict)
 
 
@@ -275,6 +279,13 @@ def load_declarations(skills: Optional[list[str]], task: Any = None) -> Declarat
                     scope=str(cred.get("scope", "")),
                     ttl=str(cred.get("ttl", "task")),
                 ))
+
+        # requires_model_call (设计侧方案 1): 默认 True。
+        # 声明里显式写 requires_model_call: false 才关掉。
+        # 多 skill 合并：任一 skill 要求即要求（OR 语义）。
+        rmc = fm.get("requires_model_call")
+        if rmc is not None:
+            merged.requires_model_call = merged.requires_model_call or bool(rmc)
 
         # requires (v2.1, I11): binding param names this component needs.
         # Values come from the task; the executor verifies presence before spawn.
