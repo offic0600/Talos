@@ -712,7 +712,7 @@ R6 全程并发未超过 1（TALOS_MAX_SPAWN=2），未触发上限。
 | M21 | 归档目录 | R2 | 25f48d2 | t_43d5a10e run 3356, archived/ 含 state.db/context.md/verdict.json/inspect.json | ✅ 通过 |
 | M22 | inspect.json 脱敏 | R2 | 25f48d2 | t_43d5a10e run 3356, inspect.json Config.Env 全部值为 *** | ✅ 通过 |
 | M23 | 红线扫描 | R2 | 25f48d2 | t_43d5a10e run 3356, 评论/verdict/inspect 无令牌/密钥/内网地址 | ✅ 通过 |
-| M24 | 哨兵寿命 | R7 | 9c9478a | Part1: t_7e896f06 run 3762, TALOS_ADJ_SLEEP=400, sentinel 存活 401s, 裁决正常落账 ✅; Part2: t_1fe191af run 3792, kill -9 executor→sentinel 90s 内退出, 新执行器清理容器 ✅ | ✅ 通过 |
+| M24 | 哨兵寿命 | R7 | 9c9478a | Part1: t_7e896f06 run 3762, TALOS_ADJ_SLEEP=400, sentinel 存活 401s, 裁决正常落账 ✅; Part2: t_d12bd258 run 3794, kill -9 executor(11362)→sentinel(14317) 53s 内退出(executor.alive mtime 停止更新, sentinel 检测 >60s 后退出), 新执行器(15911)回收 stale claim + 清理孤儿容器(docker_rm ok) ✅ | ✅ 通过 |
 | M25 | 并发上限 | R2 | 25f48d2 | TALOS_MAX_SPAWN=2, 同时运行容器不超过 2 | ✅ 通过 |
 | A1 | CI 集成 | R6 | fe424dd | t_40c80a8b run 3743, CI 超时→defect="流水线超时: 120s 内未出终态" | ✅ 通过 |
 | A2 | ES 转发 | R6 | ea76337 | t_40c80a8b run 3743, ES api_request=28=state.db assistant=28 | ✅ 通过 |
@@ -732,6 +732,14 @@ R6 全程并发未超过 1（TALOS_MAX_SPAWN=2），未触发上限。
 | TCP 转发器 9443 | (本机配置) | /tmp/mgallery_forwarder.py, 宿主机 9443→mgallery:443 |
 
 **注意**: Docker daemon MTU 和 TCP 转发器是 macOS 开发环境的 workaround，不在版本控制中。换机器需重配。Linux 生产环境不需要这些 workaround。
+
+### M24-part2 验证说明
+
+首次验证（t_c9ce6d96 / t_1fe191af）误标 ✅：当时 kill -9 杀的是 sentinel（PID 69576）而非 executor，executor 正常完成裁决，证据不成立。已重做。
+
+重做（t_d12bd258, run 3794）正确验证：
+- **第一阶段**（哨兵自行退出）：TALOS_ADJ_SLEEP=60 制造裁决窗口。adjudicate_sleep_start 后，launchctl unload 停止自动拉起，kill -9 executor PID 11362（PPID=1, 非哨兵）。executor.alive mtime 停止更新。sentinel PID 14317 在 53s 后退出，日志记录「sentinel: executor heartbeat stale >60s, exiting」(executor.jsonl ts=1789609026)。期间任务状态=running、claim_lock 仍指向死 PID、容器为孤儿(Exited 未清理)。
+- **第二阶段**（新执行器清理孤儿）：launchctl load 起新执行器 PID 15911。第一个 tick 检测到 stale claim_lock(PID 11362 不存活)→回收→收集 result.json→裁决 pass→finalized(done)→docker_rm 清理孤儿容器(ok=true)→吊销令牌→full_reap。全部在 executor.jsonl 有事件记录。
 
 ### 设计待办（不改代码）
 
