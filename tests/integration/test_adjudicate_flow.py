@@ -28,7 +28,7 @@ sys.path.insert(0, str(TALOS_ROOT))
 sys.path.insert(0, str(Path.home() / ".hermes" / "hermes-agent"))
 
 TALOS_HOME = Path(os.environ.get("TALOS_HOME", str(Path.home() / ".hermes" / "talos")))
-PILOT_REPO = "https://hgit.haier.net/S05190/talos-pilot.git"
+PILOT_REPO = "https://gitlab.example.com/group/project.git"
 
 
 # ── Fixtures ─────────────────────────────────────────────────────

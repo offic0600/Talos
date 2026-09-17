@@ -376,14 +376,14 @@ def _dispatch(conn: Any, spawn_fn: Any) -> dict:
             "SELECT count(*) FROM tasks WHERE status='ready'"
         ).fetchone()
         summary["ready_before"] = row[0]
-    except Exception:
-        pass
+    except Exception as e:
+        log_event("error", msg=f"failed to count ready tasks: {e}")
 
     # Count active hermes-worker containers
     try:
         summary["active_containers"] = len(list_running_containers())
-    except Exception:
-        pass
+    except Exception as e:
+        log_event("error", msg=f"failed to count active containers: {e}")
 
     try:
         result = dispatch_once(
@@ -448,9 +448,11 @@ def tick(conn: Any, spawn_fn: Optional[Any] = None) -> None:
     """Run one executor tick (§3).
 
     Order (I8):
-      1. Adjudicate exited containers
+      1. Adjudicate exited containers (collect → adjudicate → finalize → archive → reap)
       2. Heartbeat live containers
-      3. Dispatch new tasks
+      3. Reap orphan containers (sentinel dead but container still running)
+      4. Dispatch new ready tasks
+      5. Write tick-level log (always, even when nothing dispatched)
     """
     t0 = time.time()
 
@@ -504,6 +506,17 @@ def _self_check(
         print(f"[talos-executor] self-check (1/5) hermes_cli importable: FAIL — {e}")
         print("[talos-executor] hint: pip install -e ~/.hermes/hermes-agent")
         sys.exit(1)
+
+    # ── (1b) TALOS_ADJ_SLEEP debug hook — WARN ─────────────────────
+    # This env var injects artificial delay into adjudication for testing
+    # sentinel lifetime (M18/M24). If set in production, it slows down
+    # real adjudication — warn so it's not left on accidentally.
+    _adj_sleep = os.environ.get("TALOS_ADJ_SLEEP")
+    if _adj_sleep:
+        print(f"[talos-executor] self-check (1b) TALOS_ADJ_SLEEP: WARN — debug hook is set ({_adj_sleep}s), will slow adjudication")
+        log_event("warn", msg=f"TALOS_ADJ_SLEEP is set to {_adj_sleep}s — debug hook active, remove for production")
+    else:
+        print("[talos-executor] self-check (1b) TALOS_ADJ_SLEEP: OK (not set)")
 
     # ── (2) WORKER_IMAGE in docker images — HARD FAIL ────────────────
     try:
@@ -559,7 +572,7 @@ def _self_check(
     import ssl
 
     gl_token = os.environ.get("TALOS_GITLAB_ADMIN_TOKEN", "")
-    # hgit.haier.net may use an internal CA — disable SSL verification
+    # GitLab may use an internal CA — disable SSL verification
     ssl_ctx = ssl.create_default_context()
     ssl_ctx.check_hostname = False
     ssl_ctx.verify_mode = ssl.CERT_NONE

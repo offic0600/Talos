@@ -613,49 +613,6 @@ def _gitlab_branch_sha(project_id: str, branch: str) -> Optional[str]:
         raise RuntimeError(f"GitLab API unreachable: {e}")
 
 
-def _ls_remote(repo_url: str, branch: str) -> Optional[str]:
-    """[DEPRECATED] ``git ls-remote`` — kept for backward-compat with tests.
-
-    P0-1: replaced by ``_gitlab_branch_sha`` which uses the GitLab API.
-    Calling sites now use ``_gitlab_branch_sha`` to avoid credential
-    leakage via process arguments.
-    """
-    try:
-        result = subprocess.run(
-            ["git", "ls-remote", "--exit-code", repo_url, f"refs/heads/{branch}"],
-            capture_output=True, text=True, timeout=30,
-        )
-    except subprocess.TimeoutExpired:
-        raise RuntimeError(f"ls-remote timeout: {repo_url}")
-
-    if result.returncode == 0:
-        output = result.stdout.strip()
-        if not output:
-            return None
-        parts = output.split("\t")
-        if len(parts) >= 1 and parts[0]:
-            return parts[0].strip()
-        return None
-
-    if result.returncode == 2:
-        return None
-
-    err_first_line = result.stderr.strip().split("\n")[0] if result.stderr.strip() else "unknown error"
-    raise RuntimeError(f"repo unreachable: {repo_url}: {err_first_line}")
-
-
-def _repo_reachable(repo_url: str) -> bool:
-    """[DEPRECATED] Check if the repo URL is reachable (for problem vs defect)."""
-    try:
-        result = subprocess.run(
-            ["git", "ls-remote", repo_url, "HEAD"],
-            capture_output=True, text=True, timeout=30,
-        )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, Exception):
-        return False
-
-
 def _project_id_from_url(repo_url: str) -> Optional[str]:
     """Extract URL-encoded project path from a GitLab repo URL."""
     clean = repo_url.rstrip("/")

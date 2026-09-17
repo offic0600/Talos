@@ -213,7 +213,7 @@ def _build_env(task: Any, decl: Declaration, creds: dict, repo_url: str) -> list
     env.append("GIT_CONFIG_KEY_1=user.name")
     env.append(f"GIT_CONFIG_VALUE_1=talos[{task.id}]")
     env.append("GIT_CONFIG_KEY_2=user.email")
-    env.append("GIT_CONFIG_VALUE_2=talos-worker@haier.net")
+    env.append(f"GIT_CONFIG_VALUE_2={os.environ.get('TALOS_GIT_AUTHOR_EMAIL', 'talos-worker@localhost')}")
 
     # Repo / branch for the worker
     if repo_url:

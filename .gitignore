@@ -4,3 +4,12 @@ __pycache__/
 *.egg-info/
 .env
 *.db
+
+# Acceptance tests are environment-specific (contain real GitLab URLs, paths,
+# project IDs). They are part of "具体实施" not "通用平台" and should not be
+# tracked in the shared repository.
+tests/acceptance/
+
+# docs/ contains implementation records (acceptance reports, incident RCAs,
+# design documents with real environment info). It is "具体实施" not "通用平台".
+docs/

@@ -64,7 +64,7 @@ def _gitlab_api(method: str, path: str, body: Optional[dict] = None, *, retries:
 def _project_id_from_repo(repo_url: str) -> Optional[str]:
     """Extract URL-encoded project path from a GitLab repo URL.
 
-    ``https://hgit.haier.net/S05190/talos-pilot.git`` → ``S05190%2Ftalos-pilot``
+    ``https://gitlab.example.com/group/project.git`` → ``group%2Fproject``
     """
     # Strip .git suffix
     clean = repo_url.rstrip("/")
@@ -220,8 +220,9 @@ def cleanup_orphan_tokens() -> int:
         # 禁止空吞异常（v2.1 FIX #3）
         log_event("error", msg=f"cleanup_orphan_tokens: DB query failed: {e}")
 
-    # Scan all projects the executor has used (talos-pilot + Talos)
-    project_ids = ["16280", "16288"]  # talos-pilot + Talos
+    # Scan projects configured via env (comma-separated project IDs)
+    project_ids_raw = os.environ.get("TALOS_GITLAB_PROJECT_IDS", "")
+    project_ids = [p.strip() for p in project_ids_raw.split(",") if p.strip()]
     revoked = 0
     for pid in project_ids:
         try:

@@ -27,7 +27,6 @@ sys.path.insert(0, str(TALOS_ROOT))
 from talos.executor.adjudicate import (
     Verdict,
     adjudicate,
-    _ls_remote,
     _gitlab_branch_sha,
     _get_injected_repo,
     check_git_pushed,
@@ -257,47 +256,37 @@ class TestBadDeclarationError:
 
 
 # ═══════════════════════════════════════════════════════════════
-# 5. ls-remote 退出码 2 与其它非零的分流
+# 5. GitLab API branch SHA 查询：404 = None, 其他错误 = RuntimeError
 # ═══════════════════════════════════════════════════════════════
 
-class TestLsRemoteExitCodes:
-    """v2.1 FIX #7: --exit-code 2 = branch not exist (None), other = RuntimeError."""
+class TestGitLabBranchSha:
+    """v2.1 FIX #7: 404 = branch not exist (None), other HTTP errors = RuntimeError."""
 
-    def test_exit_code_2_returns_none(self):
-        """git ls-remote --exit-code returns 2 when branch doesn't exist → None."""
-        mock_result = MagicMock()
-        mock_result.returncode = 2
-        mock_result.stdout = ""
-        mock_result.stderr = ""
-
-        with patch("subprocess.run", return_value=mock_result):
-            result = _ls_remote("https://gitlab.example.com/test/repo.git", "talos/nonexistent")
-
+    def test_404_returns_none(self):
+        """GitLab API returns 404 when branch doesn't exist → None."""
+        from urllib.error import HTTPError as _HE
+        mock_err = _HE("Not Found", 404, "Not Found", {}, None)
+        with patch("urllib.request.urlopen", side_effect=mock_err):
+            result = _gitlab_branch_sha("123", "talos%2Fnonexistent")
         assert result is None
 
-    def test_other_nonzero_raises_runtime_error(self):
-        """git ls-remote returns non-zero (not 2) → RuntimeError with stderr first line."""
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = ""
-        mock_result.stderr = "fatal: could not read Username for\nadditional lines"
-
-        with patch("subprocess.run", return_value=mock_result):
+    def test_401_raises_runtime_error(self):
+        """GitLab API returns 401 → RuntimeError (auth failure, not 'branch not found')."""
+        from urllib.error import HTTPError as _HE
+        mock_err = _HE("Unauthorized", 401, "Unauthorized", {}, None)
+        with patch("urllib.request.urlopen", side_effect=mock_err):
             with pytest.raises(RuntimeError) as exc_info:
-                _ls_remote("https://gitlab.example.com/test/repo.git", "talos/test")
+                _gitlab_branch_sha("123", "talos%2Ftest")
+        assert "GitLab API error 401" in str(exc_info.value)
 
-        assert "could not read Username" in str(exc_info.value)
-
-    def test_exit_code_0_returns_sha(self):
-        """git ls-remote returns 0 → sha string."""
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "abc123def456\trefs/heads/talos/test"
-        mock_result.stderr = ""
-
-        with patch("subprocess.run", return_value=mock_result):
-            result = _ls_remote("https://gitlab.example.com/test/repo.git", "talos/test")
-
+    def test_200_returns_sha(self):
+        """GitLab API returns 200 → sha string from commit.id."""
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"commit": {"id": "abc123def456"}})
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            result = _gitlab_branch_sha("123", "talos%2Ftest")
         assert result == "abc123def456"
 
 
@@ -482,8 +471,8 @@ class TestContainerConfigTemplate:
 
     _REQUIRED_ENV = {
         "TALOS_MODEL": "GLM-5",
-        "TALOS_MODEL_PROVIDER": "custom:mgallery",
-        "TALOS_MODEL_PROVIDER_NAME": "mgallery",
+        "TALOS_MODEL_PROVIDER": "custom:your-provider",
+        "TALOS_MODEL_PROVIDER_NAME": "your-provider",
         "TALOS_MODEL_BASE_URL": "https://inference.example.com/v1",
         "TALOS_MODEL_KEY_ENV": "API_SERVER_KEY",
     }
@@ -497,7 +486,7 @@ class TestContainerConfigTemplate:
         content = cfg.read_text(encoding="utf-8")
         assert "model:" in content
         assert "default: GLM-5" in content
-        assert "provider: custom:mgallery" in content
+        assert "provider: custom:your-provider" in content
         assert "base_url: https://inference.example.com/v1" in content
         assert "key_env: API_SERVER_KEY" in content
         assert "talos-plugins" in content
@@ -554,12 +543,12 @@ class TestNoProxyPassthrough:
 
     def test_no_proxy_included_when_set(self, monkeypatch):
         """TALOS_NO_PROXY set → container env has NO_PROXY and no_proxy."""
-        monkeypatch.setenv("TALOS_NO_PROXY", "mgallery.haier.net,hgit.haier.net")
+        monkeypatch.setenv("TALOS_NO_PROXY", "gitlab.example.com,inference.example.com")
         from talos.executor.spawn import _build_env
         env = _build_env(self._make_task(), self._make_decl(), {}, "https://example.com/repo.git")
         env_dict = dict(e.split("=", 1) for e in env)
-        assert env_dict["NO_PROXY"] == "mgallery.haier.net,hgit.haier.net"
-        assert env_dict["no_proxy"] == "mgallery.haier.net,hgit.haier.net"
+        assert env_dict["NO_PROXY"] == "gitlab.example.com,inference.example.com"
+        assert env_dict["no_proxy"] == "gitlab.example.com,inference.example.com"
 
     def test_no_proxy_absent_when_unset(self, monkeypatch):
         """TALOS_NO_PROXY unset → container env has no NO_PROXY."""
@@ -578,7 +567,7 @@ class TestNoProxyPassthrough:
         env_dict = dict(e.split("=", 1) for e in env)
         assert env_dict["NO_PROXY"] == "custom-internal-host.local"
         # Verify no hardcoded internal domain leaks in
-        assert "mgallery" not in env_dict["NO_PROXY"]
+        assert "your-provider" not in env_dict["NO_PROXY"]
 
 
 class TestDispatchSafety:

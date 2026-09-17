@@ -8,14 +8,15 @@
     <key>ProgramArguments</key>
     <array>
         <string>/usr/bin/env</string>
-        <string>PYTHONPATH=/Users/zhaoc/.hermes/hermes-agent</string>
+        <string>PYTHONPATH=$HOME/.hermes/hermes-agent</string>
         <string>python3</string>
         <string>-m</string>
         <string>talos.executor.main</string>
     </array>
 
+    <!-- WorkingDirectory: set to your Talos checkout root -->
     <key>WorkingDirectory</key>
-    <string>/Users/zhaoc/Documents/Projects/AI-Native-Delivery/Talos</string>
+    <string>$HOME/Documents/Projects/Talos</string>
 
     <!-- Environment file is sourced via EnvironmentVariables -->
     <key>EnvironmentVariables</key>
@@ -23,9 +24,9 @@
         <key>PATH</key>
         <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Docker.app/Contents/Resources/bin</string>
         <key>HERMES_HOME</key>
-        <string>/Users/zhaoc/.hermes</string>
+        <string>$HOME/.hermes</string>
         <key>TALOS_HOME</key>
-        <string>/Users/zhaoc/.hermes/talos</string>
+        <string>$HOME/.hermes/talos</string>
         <key>TALOS_WORKER_IMAGE</key>
         <string>hermes-worker:latest</string>
     </dict>
@@ -44,8 +45,8 @@
 
     <!-- Standard output/error paths -->
     <key>StandardOutPath</key>
-    <string>/Users/zhaoc/.hermes/talos/executor.stdout.log</string>
+    <string>$HOME/.hermes/talos/executor.stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/zhaoc/.hermes/talos/executor.stderr.log</string>
+    <string>$HOME/.hermes/talos/executor.stderr.log</string>
 </dict>
 </plist>

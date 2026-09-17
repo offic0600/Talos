@@ -72,7 +72,7 @@ def _check_shadow_db(home: Optional[Path] = None) -> Optional[str]:
 KANBAN_DB: Optional[Path] = _resolve_kanban_db()
 
 #: GitLab base URL.
-GITLAB_URL = os.environ.get("TALOS_GITLAB_URL", "https://hgit.haier.net")
+GITLAB_URL = os.environ.get("TALOS_GITLAB_URL", "https://gitlab.example.com")
 
 #: Admin token for minting per-task credentials (managed config only).
 GITLAB_ADMIN_TOKEN = os.environ.get("TALOS_GITLAB_ADMIN_TOKEN", "")
@@ -82,6 +82,10 @@ ES_URL = os.environ.get("TALOS_ES_URL", "")
 
 #: Worker container name prefix.
 WORKER_PREFIX = "hermes-worker-"
+
+#: Maximum subtasks a task can create from result.json (P0: prevent unbounded
+#: task creation by containers). Override via TALOS_MAX_SUBTASKS env var.
+MAX_SUBTASKS = int(os.environ.get("TALOS_MAX_SUBTASKS", "10"))
 
 #: Worker image.  Default changed in v2.1 §11 (#9) to match the actual
 #: image built/used by hermes-agent.

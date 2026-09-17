@@ -92,7 +92,14 @@ def _format_blocked_comment(verdict: Verdict, task_id: str, run_id: int,
 
 
 def _create_subtasks(conn: Any, task_id: str, verdict: Verdict) -> None:
-    """Create subtasks declared in result.json (§3 interface signatures)."""
+    """Create subtasks declared in result.json (§3 interface signatures).
+
+    P0 安全边界：
+    - 数量上限 MAX_SUBTASKS（默认 10），超出截断 + 记 error 事件
+    - created_by 标注 talos-executor(via <父任务号>)，方便追溯
+    - title 为空跳过
+    - 单条 create_task 抛错不中断其余项
+    """
     if not verdict.subtasks:
         return
     try:
@@ -100,7 +107,17 @@ def _create_subtasks(conn: Any, task_id: str, verdict: Verdict) -> None:
     except ImportError:
         return
 
+    from talos.executor.constants import MAX_SUBTASKS
+
+    requested = len(verdict.subtasks)
+    if requested > MAX_SUBTASKS:
+        log_event("error", task_id=task_id,
+                  msg=f"实例请求创建 {requested} 个子任务，超出上限 {MAX_SUBTASKS}，已截断")
+
+    created_count = 0
     for st in verdict.subtasks:
+        if created_count >= MAX_SUBTASKS:
+            break
         if not isinstance(st, dict):
             continue
         title = st.get("title", "").strip()
@@ -112,9 +129,10 @@ def _create_subtasks(conn: Any, task_id: str, verdict: Verdict) -> None:
                 title=title,
                 body=st.get("body"),
                 skills=st.get("skills", []),
-                created_by=EXECUTOR_AUTHOR,
+                created_by=f"{EXECUTOR_AUTHOR}(via {task_id})",
             )
             link_tasks(conn, task_id, child_id)
+            created_count += 1
         except Exception as e:
             log_event("error", task_id=task_id,
                       msg=f"failed to create subtask '{title}': {e}")

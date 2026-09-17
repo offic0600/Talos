@@ -77,14 +77,19 @@ _SHELL_TOOLS = frozenset({
 
 
 def _log(event: dict) -> None:
-    """Append one JSONL line to the path_protect audit log (best-effort)."""
+    """Append one JSONL line to the path_protect audit log (best-effort).
+
+    安全证据：审计日志写不进去时同时往 stderr 打一条，
+    确保拦截信号不会因磁盘/权限问题被静默吞掉。
+    """
     try:
         entry = {"ts": time.time(), **event}
         os.makedirs(os.path.dirname(_LOG_FILE), exist_ok=True)
         with open(_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+    except Exception as e:
+        import sys
+        print(f"[path_protect] AUDIT LOG WRITE FAILED: {e} | event={event}", file=sys.stderr)
 
 
 def _protected_patterns() -> list[str]:
