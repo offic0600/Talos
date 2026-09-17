@@ -1,17 +1,46 @@
-# Talos
+# Talos — Autonomous Task Execution System
 
-AI-Native Delivery Platform — Executor.
+Talos is the executor component of the AI-native delivery platform built on
+Hermes Agent's Kanban subsystem. It runs a persistent loop that:
 
-## Overview
-
-Talos is the execution layer for the AI-native delivery platform built on Hermes Agent's Kanban subsystem.
-
-## Components
-
-- **Executor** (`talos/executor/`): Long-running process that picks up ready tasks, spawns worker containers, adjudicates results, and manages the full task lifecycle.
-- **Plugins** (`talos/plugins/`): In-container contract enforcement (path protection, skill protection, trace collection).
-- **Deploy** (`deploy/`): systemd services and Docker Compose for production deployment.
+1. **Adjudicates** exited worker containers (collect → adjudicate → finalize → archive → reap)
+2. **Heartbeats** live worker containers
+3. **Dispatches** new ready tasks via the kernel's `dispatch_once`
 
 ## Design
 
-See `docs/dd2/详细设计-第二批-执行器-v2.md` for the detailed design document.
+- **Design doc**: `docs/dd2/详细设计-第二批-执行器-v1.md` (design-side, not in this repo)
+- **Invariants I1–I10**: see PR description
+- **Hermes source**: v0.21.1 (read-only reference; this repo does NOT modify Hermes)
+
+## Structure
+
+```
+talos/
+  executor/          # Main loop, spawn, sentinel, adjudicate, finalize, archive, credentials, reap
+  plugins/           # Container-side plugins: skill_protect, path_protect, trace_collect
+  observability/     # ES forwarder + index template
+deploy/              # systemd unit, env template, docker-compose
+skills/              # Example execution units: talos-code-demo, talos-doc-demo
+tests/               # Pytest fixtures with real 38-column schema
+```
+
+## Quick Start
+
+```bash
+# Install
+pip install -e .
+
+# Configure
+cp deploy/talos.env.template /etc/hermes/talos.env
+# Edit /etc/hermes/talos.env with your values
+
+# Run
+python -m talos.executor.main
+```
+
+## Testing
+
+```bash
+python -m pytest tests/ -v
+```

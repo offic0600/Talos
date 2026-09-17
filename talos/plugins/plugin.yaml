@@ -1,0 +1,7 @@
+name: talos-plugins
+version: 1.0.0
+description: "Talos container-side plugins: skill protection, path protection, and trace collection. No kanban_complete interception (I3: adjudication is the executor's sole authority)."
+author: Talos
+hooks:
+  - pre_tool_call
+  - post_api_request

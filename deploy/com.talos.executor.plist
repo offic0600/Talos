@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.talos.executor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/env</string>
+        <string>PYTHONPATH=$HOME/.hermes/hermes-agent</string>
+        <string>python3</string>
+        <string>-m</string>
+        <string>talos.executor.main</string>
+    </array>
+
+    <!-- WorkingDirectory: set to your Talos checkout root -->
+    <key>WorkingDirectory</key>
+    <string>$HOME/Documents/Projects/Talos</string>
+
+    <!-- Environment file is sourced via EnvironmentVariables -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Applications/Docker.app/Contents/Resources/bin</string>
+        <key>HERMES_HOME</key>
+        <string>$HOME/.hermes</string>
+        <key>TALOS_HOME</key>
+        <string>$HOME/.hermes/talos</string>
+        <key>TALOS_WORKER_IMAGE</key>
+        <string>hermes-worker:latest</string>
+    </dict>
+
+    <!-- KeepAlive: restart on crash, kill -9, or unexpected exit -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Restart after 5 seconds (matches systemd RestartSec=5) -->
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+
+    <!-- Run at load -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Standard output/error paths -->
+    <key>StandardOutPath</key>
+    <string>$HOME/.hermes/talos/executor.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>$HOME/.hermes/talos/executor.stderr.log</string>
+</dict>
+</plist>

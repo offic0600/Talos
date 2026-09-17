@@ -1,0 +1,48 @@
+# Managed by Talos executor — do not edit (v2.3 §18.2 #1)
+# This config is generated per-task and contains no host secrets.
+# Template rendered by _generate_container_config() in spawn.py.
+# Placeholders ${TALOS_*} are replaced from environment variables at spawn time.
+#
+# model/provider schema (hermes-agent 0.21.1):
+#   - model.default  → canonical model id (config.py:1756-1757)
+#   - model.provider → "custom:<name>" for custom providers (config.py:1742)
+#   - model.base_url → inference endpoint URL (config.py:1753)
+#   - custom_providers[].key_env → env var name read at runtime
+#     by providers.py:374 → models_local.py:123-124 (os.getenv)
+
+model:
+  default: ${TALOS_MODEL}
+  provider: ${TALOS_MODEL_PROVIDER}
+  base_url: ${TALOS_MODEL_BASE_URL}
+  max_tokens: 32768
+
+custom_providers:
+  - name: ${TALOS_MODEL_PROVIDER_NAME}
+    base_url: ${TALOS_MODEL_BASE_URL}
+    key_env: ${TALOS_MODEL_KEY_ENV}
+    model: ${TALOS_MODEL}
+    api_mode: chat_completions
+    models:
+      - ${TALOS_MODEL}
+
+plugins:
+  enabled:
+    - talos-plugins
+
+hooks_auto_accept: true
+
+agent:
+  dialog_policy: auto_accept
+  max_turns: 90
+  tool_use_enforcement: auto
+  verify_on_stop: false
+
+terminal:
+  backend: local
+  timeout: 180
+
+toolsets:
+  - hermes-cli
+
+kanban:
+  dispatch_in_gateway: false
