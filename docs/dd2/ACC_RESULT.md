@@ -737,9 +737,27 @@ R6 全程并发未超过 1（TALOS_MAX_SPAWN=2），未触发上限。
 
 首次验证（t_c9ce6d96 / t_1fe191af）误标 ✅：当时 kill -9 杀的是 sentinel（PID 69576）而非 executor，executor 正常完成裁决，证据不成立。已重做。
 
-重做（t_d12bd258, run 3794）正确验证：
-- **第一阶段**（哨兵自行退出）：TALOS_ADJ_SLEEP=60 制造裁决窗口。adjudicate_sleep_start 后，launchctl unload 停止自动拉起，kill -9 executor PID 11362（PPID=1, 非哨兵）。executor.alive mtime 停止更新。sentinel PID 14317 在 53s 后退出，日志记录「sentinel: executor heartbeat stale >60s, exiting」(executor.jsonl ts=1789609026)。期间任务状态=running、claim_lock 仍指向死 PID、容器为孤儿(Exited 未清理)。
-- **第二阶段**（新执行器清理孤儿）：launchctl load 起新执行器 PID 15911。第一个 tick 检测到 stale claim_lock(PID 11362 不存活)→回收→收集 result.json→裁决 pass→finalized(done)→docker_rm 清理孤儿容器(ok=true)→吊销令牌→full_reap。全部在 executor.jsonl 有事件记录。
+重做（t_d12bd258, run 3794）正确验证。executor.jsonl 事件时间戳序列（Δ 相对于 kill 时刻）：
+
+| Δ | 事件 | 说明 |
+|------|------|------|
+| -134.1s | dispatched, sentinel_forked(14317) | executor 11362 派发任务，fork 哨兵 |
+| -39.4s | sentinel_container_exited | worker 容器正常退出 |
+| -35.1s | collected → adjudicate_sleep_start(60s) | executor 收集 result.json，进入 TALOS_ADJ_SLEEP=60 裁决窗口 |
+| **0s** | **kill -9 executor 11362** | launchctl unload 后杀执行器（非哨兵） |
+| +53.5s | error: "sentinel: executor heartbeat stale >60s, exiting" | executor.alive mtime 停止更新后，sentinel 检测 >60s 阈值，自行退出 |
+| +81.3s | collected → adjudicate_sleep_start(60s) | **新执行器 15911** 接手：重新收集 result.json，重新进入裁决 sleep |
+| +141.4s | adjudicate_sleep_end | 60s sleep 完成 |
+| +146.2s | adjudicated: verdict=pass | 裁决通过 |
+| +146.7s | finalized: done → archived | 终局 done |
+| +146.8s | cleaned: docker_rm(ok=true) → revoked_token → full_reap | 清理孤儿容器、吊销令牌 |
+| +147.4s | tick (首个正常 tick) | 进入正常派发循环 |
+
+**第一阶段**（哨兵自行退出）：kill -9 executor 11362 后，executor.alive mtime 停止更新。sentinel 14317 在 53s 后检测到 heartbeat stale >60s，自行退出。期间任务状态=running、claim_lock 仍指向死 PID、容器为孤儿(Exited 未清理)。
+
+**第二阶段**（新执行器接手裁决 + 清理）：launchctl load 起新执行器 PID 15911。新执行器的 tick 发现任务有一个已退出容器但未裁决完的 run（旧执行器在 TALOS_ADJ_SLEEP 裁决窗口中被杀）。新执行器**先接手裁决**：重新收集 result.json → 进入裁决 → 判 pass → finalized(done) → 然后作为 finalize 流程的一部分清理孤儿容器(docker_rm ok)、吊销令牌、full_reap。不是先回收 stale claim 再裁决——tick 的顺序是裁决已退出容器 → 代打心跳 → 回收僵尸 → 派发。
+
+**崩溃恢复观察**：执行器被 kill -9 后重启，未裁决完的 run 被新执行器正常接手并完成，结果是 done 而不是丢弃。这是对崩溃恢复与幂等的一次有效验证，比设计预期更好。注：设计文档中「被内核回收的 run 不落终局」那条适用的是内核真的关闭了 run 的情况（如超时回收），与本次不同——本次是执行器进程被杀但 run 未被内核关闭，新执行器接手后正常走完裁决流程。两者不要混。
 
 ### 设计待办（不改代码）
 
