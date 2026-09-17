@@ -1,5 +1,5 @@
 """
-test_db_path_selfcheck.py — 账本路径自检 + 影子库告警（ZhaoC 方案 1）。
+test_db_path_selfcheck.py — 账本路径自检 + 影子库告警（按最终决策：未显式配置即拒绝启动）。
 
 设计侧结论：
   HERMES_KANBAN_DB 未设置或为空 → 启动自检失败，打印明确原因，退出。

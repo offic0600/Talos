@@ -31,7 +31,7 @@ ARCHIVE_ROOT = TALOS_HOME / "archived"
 EXECUTOR_LOG = TALOS_HOME / "executor.jsonl"
 
 #: Kanban DB path — no default. Must be explicitly set via HERMES_KANBAN_DB.
-#  起不来是响亮的失败，起在错的库上是静默的失败（ZhaoC 方案 1）。
+#  起不来是响亮的失败，起在错的库上是静默的失败（按最终决策：未显式配置即拒绝启动）。
 
 
 def _resolve_kanban_db() -> Path:

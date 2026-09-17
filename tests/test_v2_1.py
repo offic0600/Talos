@@ -1073,7 +1073,7 @@ class TestGitLabBranchSha:
         import io
 
         mock_error = HTTPError(
-            url="https://hgit.example.com/api/v4/projects/123/repository/branches/talos%2Fmissing",
+            url="https://gitlab.example.com/api/v4/projects/123/repository/branches/talos%2Fmissing",
             code=404,
             msg="Not Found",
             hdrs=None,
@@ -1093,7 +1093,7 @@ class TestGitLabBranchSha:
         import io
 
         mock_error = HTTPError(
-            url="https://hgit.example.com/api/v4/projects/123/repository/branches/talos%2Ftest",
+            url="https://gitlab.example.com/api/v4/projects/123/repository/branches/talos%2Ftest",
             code=401,
             msg="Unauthorized",
             hdrs=None,
