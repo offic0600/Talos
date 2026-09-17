@@ -269,8 +269,15 @@ def check_model_calls(decl: Declaration, bundle: CollectedBundle) -> Optional[st
             break
 
     if state_db is None:
-        # state.db 不存在 → 无法判定，不触发此检查
-        # （无 state.db 的场景由 check_verification 的 evidence 分支处理）
+        # state.db 不存在 → 无法判定，不触发此检查。
+        #
+        # 边缘情况：原说由 check_verification 的 evidence 分支处理，
+        # 但 check_verification 只在 verification.source=evidence 时才跑。
+        # 如果 verification.source=ci（或 none）且 state.db 缺失，
+        # 没有任何分支会报告这个问题。
+        # 概率低——CI 来源的 task 通常有 state.db（容器跑过就有）。
+        # 写明免得以后踩：如果将来出现 CI 来源 + 无 state.db 的组合，
+        # 需要在这里加一条 defect 而不是静默跳过。
         return None
 
     try:

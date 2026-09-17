@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import Any, Optional
@@ -29,11 +30,46 @@ ARCHIVE_ROOT = TALOS_HOME / "archived"
 #: Executor event log (§10): JSONL with one line per lifecycle event.
 EXECUTOR_LOG = TALOS_HOME / "executor.jsonl"
 
-#: Kanban DB path (resolved the same way hermes does it).
-KANBAN_DB = Path(os.environ.get(
-    "HERMES_KANBAN_DB",
-    HOME / "kanban" / "kanban.db",
-))
+#: Kanban DB path — no default. Must be explicitly set via HERMES_KANBAN_DB.
+#  起不来是响亮的失败，起在错的库上是静默的失败（ZhaoC 方案 1）。
+
+
+def _resolve_kanban_db() -> Path:
+    """Resolve the kanban DB path.
+
+    HERMES_KANBAN_DB must be set to a non-empty value.
+    No fallback default — failing to start is a loud failure;
+    starting on the wrong DB is a silent one.
+    """
+    raw = os.environ.get("HERMES_KANBAN_DB", "").strip()
+    if not raw:
+        print(
+            "[talos-executor] FATAL: HERMES_KANBAN_DB is not set or empty.\n"
+            "  Set it in ~/.hermes/.env (CLI/gateway) and ~/.hermes/talos.env (executor).\n"
+            "  Example: HERMES_KANBAN_DB=/Users/$(whoami)/.hermes/kanban/kanban.db"
+        )
+        sys.exit(1)
+    return Path(raw)
+
+
+def _check_shadow_db(home: Optional[Path] = None) -> Optional[str]:
+    """Check if the hermes base default path has a kanban.db (shadow DB).
+
+    Only alerts on the EXACT path ~/.hermes/kanban.db.
+    Archive files (kanban.db.archived-*, .bak, -wal, -shm) are ignored
+    so they don't cause permanent false positives.
+    """
+    base = home if home is not None else HOME
+    shadow = base / "kanban.db"
+    if shadow.is_file():
+        return (
+            f"影子库告警：{shadow} 仍然存在——有进程在用旧路径读写账本。"
+            f"请检查是否有进程未读取 HERMES_KANBAN_DB 环境变量。"
+        )
+    return None
+
+
+KANBAN_DB: Optional[Path] = _resolve_kanban_db()
 
 #: GitLab base URL.
 GITLAB_URL = os.environ.get("TALOS_GITLAB_URL", "https://hgit.haier.net")

@@ -538,8 +538,20 @@ def _self_check(
             f"[talos-executor] self-check (3/5) kanban DB readable: FAIL — "
             f"{db_path} does not exist or is not readable"
         )
-        print("[talos-executor] hint: check HERMES_KANBAN_DB in /etc/hermes/talos.env")
+        print("[talos-executor] hint: check HERMES_KANBAN_DB in ~/.hermes/talos.env")
         sys.exit(1)
+
+    # ── (3b) Shadow DB warning — WARN ONLY ──────────────────────────
+    # Check if the old default path (~/.hermes/kanban.db) still exists.
+    # This means some process is using the wrong DB path.
+    # Only the exact path triggers — archive files (.archived-*, .bak, -wal, -shm) are ignored.
+    from talos.executor.constants import _check_shadow_db
+    shadow_warning = _check_shadow_db()
+    if shadow_warning:
+        print(f"[talos-executor] self-check (3b) shadow DB: WARN — {shadow_warning}")
+        log_event("warn", msg=shadow_warning)
+    else:
+        print("[talos-executor] self-check (3b) shadow DB: OK (no shadow)")
 
     # ── (4) GitLab reachable — HARD FAIL (v2.2) ─────────────────────
     import urllib.request
