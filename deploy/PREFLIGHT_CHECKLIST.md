@@ -80,3 +80,20 @@ curl -s -H "PRIVATE-TOKEN: $TALOS_GITLAB_ADMIN_TOKEN" \
 ```
 
 **通过标准**：`main` 分支在列表中，push_access_level ≥ 40 (Maintainer)。
+
+## 9. 本机开发（macOS + VPN）
+
+> 仅本机开发环境需要，服务器部署跳过本节。
+
+macOS Docker Desktop 的容器虚拟机看不到宿主机 VPN 网卡。如果模型网关在
+VPN 内网，需要在宿主机上运行 TCP 端口中转进程，让容器通过 host-gateway
+访问模型网关。
+
+安装与验证方式见 [`dev-macos/README.md`](dev-macos/README.md)。
+
+```bash
+# 确认中转进程在监听（替换 <port> 为 TALOS_HOST_FORWARD 里的端口号）
+nc -z 127.0.0.1 <port> && echo "✅ 端口中转存活" || echo "⚠️ 端口中转未运行"
+```
+
+**不通过的处置**：`launchctl load ~/Library/LaunchAgents/com.talos.dev-port-relay.plist`

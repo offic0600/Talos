@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.talos.dev-port-relay</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/python3</string>
+        <string>$HOME/Documents/Projects/Talos/deploy/dev-macos/port-relay.py</string>
+    </array>
+
+    <!-- EnvironmentVariables: sourced from talos.env at install time.
+         The relay reads TALOS_HOST_FORWARD from the environment. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>TALOS_HOST_FORWARD</key>
+        <string>$TALOS_HOST_FORWARD</string>
+    </dict>
+
+    <!-- KeepAlive: restart on crash or kill -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>3</integer>
+
+    <!-- Run at load -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Standard output/error paths -->
+    <key>StandardOutPath</key>
+    <string>$HOME/.hermes/talos/logs/port-relay.log</string>
+    <key>StandardErrorPath</key>
+    <string>$HOME/.hermes/talos/logs/port-relay.log</string>
+</dict>
+</plist>

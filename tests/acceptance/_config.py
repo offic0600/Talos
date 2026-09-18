@@ -67,6 +67,23 @@ os.environ.setdefault("HERMES_KANBAN_DB", KANBAN_DB)
 os.environ.setdefault("TALOS_GITLAB_URL", GITLAB_URL)
 os.environ.setdefault("TALOS_HOME", str(TALOS_HOME))
 
+# Load ~/.hermes/talos.env if it exists — dispatch_and_simulate() calls
+# tick() in-process, which needs TALOS_MODEL, TALOS_MODEL_BASE_URL, etc.
+# to render the container config. The executor process has these from its
+# own startup; the suite process must load them explicitly.
+_talos_env = HERMES_HOME / "talos.env"
+if _talos_env.exists():
+    with open(_talos_env, encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _k, _, _v = _line.partition("=")
+            _k = _k.strip()
+            _v = _v.strip()
+            # Don't override anything already set in the real environment
+            os.environ.setdefault(_k, _v)
+
 # ── sys.path setup ───────────────────────────────────────────
 
 _hermes_src = str(HERMES_AGENT_SRC)
