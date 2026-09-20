@@ -11,7 +11,7 @@ out_dir/out/result.json).
 import json
 import os
 import subprocess
-import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -35,11 +35,11 @@ def test_collect_preexisting_out_dir():
     from talos.executor.collect import collect, task_dir
     from talos.executor.constants import TASKS_ROOT
 
-    tid = "t_collect_cp_test"
+    tid = f"t_cp_{uuid.uuid4().hex[:8]}"
     run_id = 9999
     cname = f"hermes-worker-{tid}-{run_id}"
 
-    # Clean up any previous state
+    # Clean up any previous state (safety net, shouldn't be needed with uuid)
     subprocess.run(["docker", "rm", "-f", cname], capture_output=True, timeout=10)
     tdir = task_dir(tid, run_id)
     if tdir.exists():
@@ -52,11 +52,10 @@ def test_collect_preexisting_out_dir():
          "hermes-worker:latest", "-c", "mkdir -p /task/out && sleep 600"],
         capture_output=True, text=True, timeout=60
     )
-    time.sleep(1)
 
     # 2. Write result.json via docker cp (more reliable than echo in shell)
     result_data = {"schema": 1, "status": "done", "summary": "ok", "artifacts": []}
-    tmpf = "/tmp/result_collect_cp_test.json"
+    tmpf = f"/tmp/result_{tid}.json"
     with open(tmpf, "w") as f:
         json.dump(result_data, f)
     r = subprocess.run(["docker", "cp", tmpf, f"{cname}:/task/out/result.json"],
@@ -66,7 +65,6 @@ def test_collect_preexisting_out_dir():
 
     # 3. Stop container
     subprocess.run(["docker", "stop", cname], capture_output=True, timeout=30)
-    time.sleep(0.5)
 
     # 4. Pre-create out_dir (simulating a previous collect that left it behind)
     tdir.mkdir(parents=True, exist_ok=True)
