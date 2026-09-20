@@ -47,11 +47,13 @@ def test_collect_preexisting_out_dir():
         shutil.rmtree(tdir, ignore_errors=True)
 
     # 1. Create container (sleep 600 to keep it running)
-    subprocess.run(
+    r = subprocess.run(
         ["docker", "run", "-d", "--name", cname, "--entrypoint", "sh",
          "hermes-worker:latest", "-c", "mkdir -p /task/out && sleep 600"],
         capture_output=True, text=True, timeout=60
     )
+    if r.returncode != 0:
+        pytest.fail(f"docker run failed for {cname}: {r.stderr}")
 
     # 2. Write result.json via docker cp (more reliable than echo in shell)
     result_data = {"schema": 1, "status": "done", "summary": "ok", "artifacts": []}
@@ -61,10 +63,13 @@ def test_collect_preexisting_out_dir():
     r = subprocess.run(["docker", "cp", tmpf, f"{cname}:/task/out/result.json"],
                        capture_output=True, text=True, timeout=15)
     os.unlink(tmpf)
-    assert r.returncode == 0, f"docker cp failed: {r.stderr}"
+    if r.returncode != 0:
+        pytest.fail(f"docker cp result.json failed for {cname}: {r.stderr}")
 
     # 3. Stop container
-    subprocess.run(["docker", "stop", cname], capture_output=True, timeout=30)
+    r = subprocess.run(["docker", "stop", cname], capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        pytest.fail(f"docker stop failed for {cname}: {r.stderr}")
 
     # 4. Pre-create out_dir (simulating a previous collect that left it behind)
     tdir.mkdir(parents=True, exist_ok=True)

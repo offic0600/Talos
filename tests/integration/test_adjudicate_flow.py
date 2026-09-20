@@ -84,6 +84,8 @@ def _simulate_container(tid, run_id, result_json=None, work_files=None):
     Cleans up any pre-existing task directory to prevent stale out_dir
     from causing docker cp nesting (collect.py uses /task/out/. but
     we clean anyway for hygiene).
+
+    Every docker command checks returncode and fails with stderr on error.
     """
     # Clean up any stale task directory from a previous failed run
     from talos.executor.collect import task_dir
@@ -93,19 +95,23 @@ def _simulate_container(tid, run_id, result_json=None, work_files=None):
         shutil.rmtree(tdir, ignore_errors=True)
 
     cname = f"hermes-worker-{tid}-{run_id}"
-    subprocess.run(
+    r = subprocess.run(
         ["docker", "run", "-d", "--name", cname, "--entrypoint", "sh",
          "hermes-worker:latest", "-c", "mkdir -p /task/out /work && sleep 600"],
         capture_output=True, text=True, timeout=60
     )
+    if r.returncode != 0:
+        pytest.fail(f"docker run failed for {cname}: {r.stderr}")
     # Write result.json via docker cp (avoids shell escaping)
     if result_json is not None:
         tmpf = f"/tmp/result_{tid}_{run_id}.json"
         with open(tmpf, "w") as f:
             json.dump(result_json, f)
-        subprocess.run(["docker", "cp", tmpf, f"{cname}:/task/out/result.json"],
-                       capture_output=True, timeout=15)
+        r = subprocess.run(["docker", "cp", tmpf, f"{cname}:/task/out/result.json"],
+                           capture_output=True, text=True, timeout=15)
         os.unlink(tmpf)
+        if r.returncode != 0:
+            pytest.fail(f"docker cp result.json failed for {cname}: {r.stderr}")
     # Write work files
     if work_files:
         for path, content in work_files.items():
@@ -115,12 +121,18 @@ def _simulate_container(tid, run_id, result_json=None, work_files=None):
             full_path = f"/work/{path}"
             parent = os.path.dirname(full_path)
             if parent != "/work":
-                subprocess.run(["docker", "exec", cname, "mkdir", "-p", parent],
-                               capture_output=True, timeout=10)
-            subprocess.run(["docker", "cp", tmpw, f"{cname}:{full_path}"],
-                           capture_output=True, timeout=15)
+                r = subprocess.run(["docker", "exec", cname, "mkdir", "-p", parent],
+                                   capture_output=True, text=True, timeout=10)
+                if r.returncode != 0:
+                    pytest.fail(f"docker exec mkdir failed for {cname}: {r.stderr}")
+            r = subprocess.run(["docker", "cp", tmpw, f"{cname}:{full_path}"],
+                           capture_output=True, text=True, timeout=15)
             os.unlink(tmpw)
-    subprocess.run(["docker", "stop", cname], capture_output=True, timeout=30)
+            if r.returncode != 0:
+                pytest.fail(f"docker cp workfile failed for {cname}: {r.stderr}")
+    r = subprocess.run(["docker", "stop", cname], capture_output=True, text=True, timeout=30)
+    if r.returncode != 0:
+        pytest.fail(f"docker stop failed for {cname}: {r.stderr}")
 
 
 def _manual_dispatch(conn, tid):

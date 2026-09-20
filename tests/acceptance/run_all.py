@@ -1309,7 +1309,8 @@ def check_m10() -> AccResult:
     result_json = {"schema": 1, "status": "done",
                    "summary": "M10 wrong sha",
                    "artifacts": [{"kind": "git_branch", "repo": PILOT_REPO,
-                                  "branch": "talos/dummy", "sha": wrong_sha}],
+                                  "branch": "<copy the real branch from context file binding section>",
+                                  "sha": wrong_sha}],
                    "subtasks": [], "request_review": False,
                    "comments": [], "self_check": {"verification_ran": False}}
 
@@ -1319,10 +1320,13 @@ def check_m10() -> AccResult:
                             f"Write a Python feature file to src/feature.py.\n"
                             f"Push to the branch given in the context file binding section.\n"
                             f"Do not choose your own branch name.\n"
-                            f"Write result.json with this exact content:\n"
+                            f"Write result.json with this content, but replace "
+                            f"<copy the real branch from context file binding section> "
+                            f"with the actual branch name:\n"
                             f"{json.dumps(result_json)}\n"
                             f"IMPORTANT: The artifacts[0].sha must be exactly "
-                            f"'{wrong_sha}' (40 zeros). Do NOT use the real sha."),
+                            f"'{wrong_sha}' (40 zeros). Do NOT use the real sha.\n"
+                            f"repo and branch must match the context file exactly."),
                       skills=["talos-code-demo"])
     task_ids.append(tid)
 
@@ -1350,9 +1354,10 @@ def check_m10() -> AccResult:
         verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
         problems = verdict.get("problems", [])
         has_sha_mismatch = any("sha" in p.lower() or "不匹配" in p for p in problems)
-        evidence_parts.append(f"verdict={verdict.get('status')}, sha_mismatch={has_sha_mismatch}")
+        has_binding_mismatch = any("绑定" in p or "不符" in p or "repo" in p.lower() for p in problems)
+        evidence_parts.append(f"verdict={verdict.get('status')}, sha_mismatch={has_sha_mismatch}, binding_mismatch={has_binding_mismatch}")
 
-        if has_sha_mismatch or verdict.get("status") in ("unmet", "degraded"):
+        if has_sha_mismatch and not has_binding_mismatch:
             cleanup_task(tid)
             return AccResult("M10", "", "auto", PASS,
                              "; ".join(evidence_parts),
