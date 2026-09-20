@@ -79,7 +79,11 @@ def make_task(conn):
 
 
 def _simulate_container(tid, run_id, result_json=None, work_files=None):
-    """Create a stopped container with result.json and work files."""
+    """Create a stopped container with result.json and work files.
+
+    Verifies that docker cp succeeded by checking the return code;
+    retries once on failure to avoid Docker timing flakiness.
+    """
     cname = f"hermes-worker-{tid}-{run_id}"
     subprocess.run(
         ["docker", "run", "-d", "--name", cname, "--entrypoint", "sh",
@@ -91,8 +95,21 @@ def _simulate_container(tid, run_id, result_json=None, work_files=None):
         tmpf = f"/tmp/result_{tid}_{run_id}.json"
         with open(tmpf, "w") as f:
             json.dump(result_json, f)
-        subprocess.run(["docker", "cp", tmpf, f"{cname}:/task/out/result.json"],
-                       capture_output=True, timeout=15)
+        # Retry once if docker cp fails (Docker timing flakiness)
+        for attempt in range(2):
+            r = subprocess.run(["docker", "cp", tmpf, f"{cname}:/task/out/result.json"],
+                               capture_output=True, timeout=15)
+            if r.returncode == 0:
+                break
+            time.sleep(1)
+        else:
+            # Final verification: check file exists inside container
+            verify = subprocess.run(
+                ["docker", "exec", cname, "test", "-f", "/task/out/result.json"],
+                capture_output=True, timeout=10)
+            if verify.returncode != 0:
+                raise RuntimeError(
+                    f"docker cp result.json failed for {cname} after 2 attempts")
         os.unlink(tmpf)
     # Write work files
     if work_files:
@@ -109,7 +126,14 @@ def _simulate_container(tid, run_id, result_json=None, work_files=None):
                            capture_output=True, timeout=15)
             os.unlink(tmpw)
     subprocess.run(["docker", "stop", cname], capture_output=True, timeout=30)
-    time.sleep(0.5)
+    # Wait for container to reach "exited" state — docker cp from a
+    # container that's still transitioning to stopped can fail silently.
+    for _ in range(10):
+        r = subprocess.run(["docker", "inspect", "-f", "{{.State.Status}}", cname],
+                           capture_output=True, text=True, timeout=10)
+        if r.stdout.strip() == "exited":
+            break
+        time.sleep(0.5)
 
 
 def _manual_dispatch(conn, tid):
