@@ -19,50 +19,36 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.expanduser("~/.hermes/hermes-agent"))
 
-# Create a temp DB that actually exists — force-set env var
+# Create a temp DB that actually exists for _self_check item (3) to pass.
+# Do NOT set HERMES_KANBAN_DB at module level — it pollutes constants.py's
+# module-level KANBAN_DB cache and breaks other tests. Instead, use an
+# autouse fixture that sets/restores env vars per-test.
 _TMP_DB = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
 _TMP_DB.close()
 conn = sqlite3.connect(_TMP_DB.name)
 conn.execute("CREATE TABLE IF NOT EXISTS tasks (id TEXT)")
 conn.commit()
 conn.close()
-os.environ["TALOS_TEST_DB"] = _TMP_DB.name  # force-set, not setdefault
-os.environ["HERMES_KANBAN_DB"] = _TMP_DB.name  # constants.py needs this at import time
+
+# TALOS_TEST_DB is needed for conftest.py's skip guard — set it once
+os.environ.setdefault("TALOS_TEST_DB", _TMP_DB.name)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_env(monkeypatch):
+    """Set HERMES_KANBAN_DB for this test only; restore after.
+
+    constants.py reads HERMES_KANBAN_DB at import time (module-level
+    KANBAN_DB).  We must not pollute it across tests.  monkeypatch
+    auto-restores env vars after each test.
+    """
+    monkeypatch.setenv("HERMES_KANBAN_DB", _TMP_DB.name)
+    monkeypatch.setenv("TALOS_TEST_DB", _TMP_DB.name)
+    yield
 
 
 class TestSelfCheckGitLabWarnOnly:
     """GitLab connection-layer failures must warn, not exit."""
-
-    def _run_selfcheck(self, gitlab_exc):
-        """Run _self_check with all pre-GitLab items mocked to pass,
-        and capture stdout. Returns (captured_out, exit_code_or_None)."""
-        from talos.executor import loop as loop_mod
-
-        with mock.patch.object(loop_mod, "log_event") as mock_log, \
-             mock.patch("subprocess.run") as mock_subproc, \
-             mock.patch("urllib.request.urlopen", side_effect=gitlab_exc), \
-             mock.patch("pathlib.Path.is_file", return_value=True), \
-             mock.patch("os.access", return_value=True), \
-             mock.patch("builtins.__import__", side_effect=self._import_mock):
-            mock_subproc.return_value = mock.Mock(returncode=0)
-            # Also need to make skills check pass — patch the skills dir
-            # to be empty so skill_dirs=[] → sys.exit(1) at (5)
-            # We need to prevent that. Patch _self_check's internals
-            # by making repo_skills.is_dir() return False
-            try:
-                loop_mod._self_check(
-                    worker_image="hermes-worker:latest",
-                    kanban_db=os.environ["TALOS_TEST_DB"],
-                    gitlab_url="https://gitlab.invalid.example",
-                )
-                return "", None
-            except SystemExit as e:
-                # Capture stdout via mock
-                return None, e.code
-
-    def _import_mock(self, name, *args, **kwargs):
-        """Allow normal imports except for the ones we want to mock."""
-        return __builtins__.__import__(name, *args, **kwargs) if hasattr(__builtins__, '__import__') else __import__(name, *args, **kwargs)
 
     def test_urLError_does_not_exit(self, capsys):
         """urllib URLError (DNS, connection refused) → WARN, not sys.exit."""
@@ -76,7 +62,7 @@ class TestSelfCheckGitLabWarnOnly:
             try:
                 loop_mod._self_check(
                     worker_image="hermes-worker:latest",
-                    kanban_db=os.environ["TALOS_TEST_DB"],
+                    kanban_db=_TMP_DB.name,
                     gitlab_url="https://gitlab.invalid.example",
                 )
             except SystemExit:
@@ -102,7 +88,7 @@ class TestSelfCheckGitLabWarnOnly:
             try:
                 loop_mod._self_check(
                     worker_image="hermes-worker:latest",
-                    kanban_db=os.environ["TALOS_TEST_DB"],
+                    kanban_db=_TMP_DB.name,
                     gitlab_url="https://gitlab.invalid.example",
                 )
             except SystemExit:
@@ -126,7 +112,7 @@ class TestSelfCheckGitLabWarnOnly:
             try:
                 loop_mod._self_check(
                     worker_image="hermes-worker:latest",
-                    kanban_db=os.environ["TALOS_TEST_DB"],
+                    kanban_db=_TMP_DB.name,
                     gitlab_url="https://gitlab.invalid.example",
                 )
             except SystemExit:
@@ -150,7 +136,7 @@ class TestSelfCheckGitLabWarnOnly:
             try:
                 loop_mod._self_check(
                     worker_image="hermes-worker:latest",
-                    kanban_db=os.environ["TALOS_TEST_DB"],
+                    kanban_db=_TMP_DB.name,
                     gitlab_url="https://gitlab.invalid.example",
                 )
             except SystemExit:
@@ -179,7 +165,7 @@ class TestSelfCheckGitLabWarnOnly:
             with pytest.raises(SystemExit) as exc_info:
                 loop_mod._self_check(
                     worker_image="hermes-worker:latest",
-                    kanban_db=os.environ["TALOS_TEST_DB"],
+                    kanban_db=_TMP_DB.name,
                     gitlab_url="https://gitlab.invalid.example",
                 )
             assert exc_info.value.code == 1
@@ -207,7 +193,7 @@ class TestSelfCheckGitLabWarnOnly:
             with pytest.raises(SystemExit) as exc_info:
                 loop_mod._self_check(
                     worker_image="hermes-worker:latest",
-                    kanban_db=os.environ["TALOS_TEST_DB"],
+                    kanban_db=_TMP_DB.name,
                     gitlab_url="https://gitlab.invalid.example",
                 )
             assert exc_info.value.code == 1
@@ -235,7 +221,7 @@ class TestSelfCheckGitLabWarnOnly:
             try:
                 loop_mod._self_check(
                     worker_image="hermes-worker:latest",
-                    kanban_db=os.environ["TALOS_TEST_DB"],
+                    kanban_db=_TMP_DB.name,
                     gitlab_url="https://gitlab.invalid.example",
                 )
             except SystemExit:
@@ -259,7 +245,7 @@ class TestSelfCheckGitLabWarnOnly:
             try:
                 loop_mod._self_check(
                     worker_image="hermes-worker:latest",
-                    kanban_db=os.environ["TALOS_TEST_DB"],
+                    kanban_db=_TMP_DB.name,
                     gitlab_url="https://gitlab.invalid.example",
                 )
             except SystemExit:
