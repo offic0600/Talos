@@ -1193,12 +1193,11 @@ def check_m8() -> AccResult:
     task_ids: list[str] = []
     evidence_parts: list[str] = []
 
-    # M8 tests CI verification. talos-code-demo requires repo binding (I11),
-    # which causes capability-block without a repo URL. Use talos-acc-pass
-    # (requires: []) so the task actually runs and gets adjudicated.
+    # M8 tests CI verification: talos-code-demo with repo binding.
+    # verification.source: ci → worker pushes branch → pipeline success/fail.
     tid = create_task("M8 CI verification",
-                      body=f"M8 test: CI pipeline check",
-                      skills=["talos-acc-pass"])
+                      body=f"repo: {PILOT_REPO}\nM8 test: CI pipeline check",
+                      skills=["talos-code-demo"])
     task_ids.append(tid)
 
     task = wait_for_adjudication(tid, timeout=900)
@@ -1967,11 +1966,11 @@ def check_m22() -> AccResult:
     evidence_parts: list[str] = []
 
     # M22 tests two different skills by same executor.
-    # talos-code-demo requires repo binding (I11) → blocked without repo URL.
-    # Use talos-acc-pass (requires: []) so both tasks actually run.
+    # Code skill: talos-code-demo (ci + git_branch) with repo binding.
+    # Doc skill: talos-doc-demo (none + platform_attachment).
     tid1 = create_task("M22 code skill",
-                       body=f"M22 test: code skill",
-                       skills=["talos-acc-pass"])
+                       body=f"repo: {PILOT_REPO}\nM22 test: code skill",
+                       skills=["talos-code-demo"])
     tid2 = create_task("M22 doc skill",
                        body=f"M22 test: doc skill",
                        skills=["talos-doc-demo"])

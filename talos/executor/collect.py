@@ -115,7 +115,7 @@ def collect(task_id: str, run_id: int) -> CollectedBundle:
 
     # 2. Copy result.json
     out_dir = tdir / "out"
-    _docker_cp(cname, "/task/out/", out_dir)
+    _docker_cp(cname, "/task/out/.", out_dir)
     result_path = out_dir / "result.json"
     bundle.result_path = result_path if result_path.exists() else None
 

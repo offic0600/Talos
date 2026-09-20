@@ -81,35 +81,37 @@ def make_task(conn):
 def _simulate_container(tid, run_id, result_json=None, work_files=None):
     """Create a stopped container with result.json and work files.
 
-    Verifies that docker cp succeeded by checking the return code;
-    retries once on failure to avoid Docker timing flakiness.
+    Cleans up any pre-existing task directory to prevent stale out_dir
+    from causing docker cp nesting (collect.py uses /task/out/. but
+    we clean anyway for hygiene).
     """
+    # Clean up any stale task directory from a previous failed run
+    from talos.executor.collect import task_dir
+    tdir = task_dir(tid, run_id)
+    if tdir.exists():
+        import shutil
+        shutil.rmtree(tdir, ignore_errors=True)
+
     cname = f"hermes-worker-{tid}-{run_id}"
     subprocess.run(
         ["docker", "run", "-d", "--name", cname, "--entrypoint", "sh",
          "hermes-worker:latest", "-c", "mkdir -p /task/out /work && sleep 600"],
         capture_output=True, text=True, timeout=60
     )
+    # Wait for container to be running before writing files
+    for _ in range(10):
+        r = subprocess.run(["docker", "inspect", "-f", "{{.State.Status}}", cname],
+                           capture_output=True, text=True, timeout=10)
+        if r.stdout.strip() == "running":
+            break
+        time.sleep(0.5)
     # Write result.json via docker cp (avoids shell escaping)
     if result_json is not None:
         tmpf = f"/tmp/result_{tid}_{run_id}.json"
         with open(tmpf, "w") as f:
             json.dump(result_json, f)
-        # Retry once if docker cp fails (Docker timing flakiness)
-        for attempt in range(2):
-            r = subprocess.run(["docker", "cp", tmpf, f"{cname}:/task/out/result.json"],
-                               capture_output=True, timeout=15)
-            if r.returncode == 0:
-                break
-            time.sleep(1)
-        else:
-            # Final verification: check file exists inside container
-            verify = subprocess.run(
-                ["docker", "exec", cname, "test", "-f", "/task/out/result.json"],
-                capture_output=True, timeout=10)
-            if verify.returncode != 0:
-                raise RuntimeError(
-                    f"docker cp result.json failed for {cname} after 2 attempts")
+        subprocess.run(["docker", "cp", tmpf, f"{cname}:/task/out/result.json"],
+                       capture_output=True, timeout=15)
         os.unlink(tmpf)
     # Write work files
     if work_files:
@@ -126,14 +128,7 @@ def _simulate_container(tid, run_id, result_json=None, work_files=None):
                            capture_output=True, timeout=15)
             os.unlink(tmpw)
     subprocess.run(["docker", "stop", cname], capture_output=True, timeout=30)
-    # Wait for container to reach "exited" state — docker cp from a
-    # container that's still transitioning to stopped can fail silently.
-    for _ in range(10):
-        r = subprocess.run(["docker", "inspect", "-f", "{{.State.Status}}", cname],
-                           capture_output=True, text=True, timeout=10)
-        if r.stdout.strip() == "exited":
-            break
-        time.sleep(0.5)
+    time.sleep(0.5)
 
 
 def _manual_dispatch(conn, tid):
