@@ -46,39 +46,37 @@ def test_collect_preexisting_out_dir():
         import shutil
         shutil.rmtree(tdir, ignore_errors=True)
 
-    # 1. Create container with result.json
+    # 1. Create container (sleep 600 to keep it running)
     subprocess.run(
         ["docker", "run", "-d", "--name", cname, "--entrypoint", "sh",
-         "hermes-worker:latest",
-         "-c", "mkdir -p /task/out && echo '{\"schema\":1,\"status\":\"done\",\"summary\":\"ok\",\"artifacts\":[]}' > /task/out/result.json && sleep 600"],
+         "hermes-worker:latest", "-c", "mkdir -p /task/out && sleep 600"],
         capture_output=True, text=True, timeout=60
     )
-    # Wait for container to be running
-    for _ in range(10):
-        r = subprocess.run(["docker", "inspect", "-f", "{{.State.Status}}", cname],
-                           capture_output=True, text=True, timeout=10)
-        if r.stdout.strip() == "running":
-            break
-        time.sleep(0.5)
+    time.sleep(1)
 
-    # Verify result.json is in container
-    r = subprocess.run(["docker", "exec", cname, "test", "-f", "/task/out/result.json"],
-                       capture_output=True, timeout=10)
-    assert r.returncode == 0, "result.json should exist in container"
+    # 2. Write result.json via docker cp (more reliable than echo in shell)
+    result_data = {"schema": 1, "status": "done", "summary": "ok", "artifacts": []}
+    tmpf = "/tmp/result_collect_cp_test.json"
+    with open(tmpf, "w") as f:
+        json.dump(result_data, f)
+    r = subprocess.run(["docker", "cp", tmpf, f"{cname}:/task/out/result.json"],
+                       capture_output=True, text=True, timeout=15)
+    os.unlink(tmpf)
+    assert r.returncode == 0, f"docker cp failed: {r.stderr}"
 
-    # 2. Stop container
+    # 3. Stop container
     subprocess.run(["docker", "stop", cname], capture_output=True, timeout=30)
     time.sleep(0.5)
 
-    # 3. Pre-create out_dir (simulating a previous collect that left it behind)
+    # 4. Pre-create out_dir (simulating a previous collect that left it behind)
     tdir.mkdir(parents=True, exist_ok=True)
     out_dir = tdir / "out"
     out_dir.mkdir(parents=True, exist_ok=True)  # Pre-existing!
 
-    # 4. Call collect()
+    # 5. Call collect()
     bundle = collect(tid, run_id)
 
-    # 5. Assertions
+    # 6. Assertions
     assert out_dir.exists(), "out_dir should exist"
     assert (out_dir / "result.json").exists(), \
         "result.json must be at out_dir/result.json, not out_dir/out/result.json"

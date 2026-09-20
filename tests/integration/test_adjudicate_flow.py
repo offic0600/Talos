@@ -98,13 +98,9 @@ def _simulate_container(tid, run_id, result_json=None, work_files=None):
          "hermes-worker:latest", "-c", "mkdir -p /task/out /work && sleep 600"],
         capture_output=True, text=True, timeout=60
     )
-    # Wait for container to be running before writing files
-    for _ in range(10):
-        r = subprocess.run(["docker", "inspect", "-f", "{{.State.Status}}", cname],
-                           capture_output=True, text=True, timeout=10)
-        if r.stdout.strip() == "running":
-            break
-        time.sleep(0.5)
+    # Brief wait for container to be ready for docker cp
+    import time as _time
+    _time.sleep(1)
     # Write result.json via docker cp (avoids shell escaping)
     if result_json is not None:
         tmpf = f"/tmp/result_{tid}_{run_id}.json"
