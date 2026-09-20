@@ -933,3 +933,35 @@ class TestCheckCiPipelineAppearWindow:
         assert len(problems) == 0, f"Expected no problems, got {problems}"
         assert call_count["n"] >= 3, f"Expected >=3 polls, got {call_count['n']}"
         assert mock_sleep.call_count >= 2, f"Expected >=2 sleeps, got {mock_sleep.call_count}"
+
+
+class TestSelfReportedShaBranchMatching:
+    """I14: _get_self_reported_sha must match injected branch, not kind-only."""
+
+    def test_sha_lookup_returns_none_when_branch_mismatches(self, tmp_path):
+        """result.json has git_branch artifact with branch='talos/other',
+        injected branch is 'talos/t_x' → _get_self_reported_sha returns None."""
+        from talos.executor.adjudicate import _get_self_reported_sha
+
+        bundle = make_bundle(
+            tmp_path,
+            result_json={
+                "schema": 1,
+                "status": "done",
+                "summary": "ok",
+                "artifacts": [
+                    {
+                        "kind": "git_branch",
+                        "repo": "https://gitlab.example.com/test/repo.git",
+                        "branch": "talos/other",
+                        "sha": "abc123",
+                    }
+                ],
+            },
+        )
+
+        result = _get_self_reported_sha(bundle, "talos/t_x")
+        assert result is None, (
+            f"Expected None when branch mismatches, got {result}"
+        )
+

@@ -569,7 +569,7 @@ def _get_self_reported_sha(bundle: CollectedBundle, branch: str) -> Optional[str
         return None
     for art in bundle.result_json.get("artifacts", []):
         if isinstance(art, dict):
-            if art.get("branch") == branch or art.get("kind") == "git_branch":
+            if art.get("kind") == "git_branch" and art.get("branch") == branch:
                 return art.get("sha")
     return None
 
