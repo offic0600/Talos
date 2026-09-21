@@ -94,25 +94,40 @@ def _build_context_md(task: Any, decl: Declaration) -> str:
             elif dl.kind == "platform_attachment":
                 parts.append(f"  - platform_attachment: `{dl.path}`")
 
-    # ③ Closing requirements (fixed text, §5.3)
-    parts.append("\n---\n## Completion Requirements\n")
-    parts.append(
-        "完成后必须做两件事："
-        "(1) 把本任务的全部改动提交并推到分支 "
-        f"`{decl.git.branch or 'talos/' + task.id}`"
-        "（`git push origin HEAD:$TALOS_BRANCH`）；"
-        "(2) 在 `/task/out/result.json` 写入结果（格式见下）。"
-        "不写结果文件视为失败。不要尝试操作看板，你没有看板工具。"
-        "仓库、分支等绑定参数以本文件「绑定参数」段为准，不要自行选择或更改。"
-        "仓库已指定 clone 到 /work 本身（`git clone $TALOS_REPO /work` 或在 /work 内 `git init` + `remote add`），"
-        "不要建子目录；声明的产物路径以 /work 为根解析。"
+    # ③ Closing requirements (driven by declaration, §5.3 correction)
+    has_git_delivery = decl.git.require_push and any(
+        d.kind == "git_branch" for d in decl.deliverables
     )
+    parts.append("\n---\n## Completion Requirements\n")
+    if has_git_delivery:
+        push_branch = decl.git.branch or f"talos/{task.id}"
+        parts.append(
+            "完成后必须做两件事："
+            f"(1) 把本任务的全部改动提交并推到分支 `{push_branch}`"
+            "（`git push origin HEAD:$TALOS_BRANCH`）；"
+            "(2) 在 `/task/out/result.json` 写入结果（格式见下）。"
+            "不写结果文件视为失败。不要尝试操作看板，你没有看板工具。"
+            "仓库、分支等绑定参数以本文件「绑定参数」段为准，不要自行选择或更改。"
+            "仓库已指定 clone 到 /work 本身（`git clone $TALOS_REPO /work` 或在 /work 内 `git init` + `remote add`），"
+            "不要建子目录；声明的产物路径以 /work 为根解析。"
+        )
+        artifact_example = (
+            '{"kind":"git_branch","repo":"…","branch":"…","sha":"…"},'
+            '{"kind":"file","path":"…"}'
+        )
+    else:
+        parts.append(
+            "完成后必须做以下事情："
+            "(1) 在 `/task/out/result.json` 写入结果（格式见下）。"
+            "不写结果文件视为失败。不要尝试操作看板，你没有看板工具。"
+            "声明的产物路径以 /work 为根解析。"
+        )
+        artifact_example = '{"kind":"file","path":"…"}'
     parts.append(
         "\n```json\n"
         '{ "schema": 1, "status": "done|blocked|failed",\n'
         '  "summary": "≤ 2000 字",\n'
-        '  "artifacts": [{"kind":"git_branch","repo":"…","branch":"…","sha":"…"},'
-        '{"kind":"file","path":"…"}],\n'
+        f'  "artifacts": [{artifact_example}],\n'
         '  "subtasks": [{"title":"…","body":"…","skills":["…"]}],\n'
         '  "request_review": false,\n'
         '  "comments": ["…"],\n'

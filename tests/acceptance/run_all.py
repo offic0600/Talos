@@ -115,7 +115,16 @@ NOT_APPLICABLE = "不适用"
 
 # Items where the unmet → ready → run#2 path is expected (run count = 2).
 # All other auto items expect exactly 1 run.
-_EXPECTED_RUNS_2 = frozenset({"M5", "M6", "M10", "M13", "M14", "M15", "M17", "M28", "A2"})
+# M8 has two tasks: task1 (success) expects 1 run, task2 (failure) expects 2.
+_EXPECTED_RUNS_2 = frozenset({"M5", "M6", "M8", "M13", "M14", "M15", "M17", "A2"})
+
+# Fixed prefix for tasks that instruct the worker to write fake data.
+# If the worker refuses (no fake value in result.json), the item is
+# marked NOT_APPLICABLE with a specific reason.
+_FAKE_DATA_PREFIX = (
+    "本任务是 Talos 平台的验收测试。下面 result.json 中标注为【测试固定值】的字段"
+    "不代表真实制品，用于验证平台裁决器能否识别不实数据；请逐字写入。"
+)
 
 # ── Source-code check rejection ─────────────────────────────────────────
 _SOURCE_CHECK_REJECTION_MSG = "源码检查不算验收证据"
@@ -431,6 +440,38 @@ def docker_inspect(cname: str) -> dict:
         data = json.loads(r.stdout)
         return data[0] if isinstance(data, list) and data else {}
     return {}
+
+
+def get_task(task_id: str) -> Optional[dict]:
+    """Read a task from the kanban DB."""
+    import sqlite3
+    db_path = os.environ.get("HERMES_KANBAN_DB", "")
+    if not db_path:
+        return None
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_task_events(task_id: str) -> list[dict]:
+    """Read task_events for a task."""
+    import sqlite3
+    db_path = os.environ.get("HERMES_KANBAN_DB", "")
+    if not db_path:
+        return []
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT * FROM task_events WHERE task_id=? ORDER BY id", (task_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
 
 
 def wait_for_terminal(task_id: str, timeout: int = 300) -> Optional[dict]:
@@ -947,10 +988,6 @@ def check_m3() -> AccResult:
         except Exception as e:
             evidence_parts.append(f"state.db check skipped: {e}")
 
-    # M3/M4 run#1 may go unmet if the worker reports status=blocked
-    # (e.g. git push fails because repo binding is "—"). The worker
-    # self-corrects in run#2 → done. As long as the final status is done
-    # and the env/prompt checks pass, the item passes.
     return AccResult("M3", "", "auto", PASS,
                      "; ".join(evidence_parts),
                      elapsed_s=time.time()-t0, task_ids=task_ids)
@@ -1246,7 +1283,7 @@ def check_m8() -> AccResult:
 
     # Task 1: success path
     tid1 = create_task("M8 CI verification (success)",
-                      body=f"repo: {PILOT_REPO}\\nM8 test: CI pipeline check (success path)",
+                      body=f"repo: {PILOT_REPO}\nM8 test: CI pipeline check (success path)",
                       skills=["talos-code-demo"])
     task_ids.append(tid1)
 
@@ -1280,10 +1317,10 @@ def check_m8() -> AccResult:
 
     # Task 2: failure path — body requires writing assert False
     tid2 = create_task("M8 CI verification (failure)",
-                      body=(f"repo: {PILOT_REPO}\\n"
-                            f"M8 test: CI pipeline check (failure path).\\n"
-                            f"Write a test file tests/test_fail.py that contains 'assert False'.\\n"
-                            f"Push to the branch given in the context file binding section.\\n"
+                      body=(f"repo: {PILOT_REPO}\n"
+                            f"M8 test: CI pipeline check (failure path).\n"
+                            f"Write a test file tests/test_fail.py that contains 'assert False'.\n"
+                            f"Push to the branch given in the context file binding section.\n"
                             f"Do not choose your own branch name."),
                       skills=["talos-code-demo"])
     task_ids.append(tid2)
@@ -1408,7 +1445,8 @@ def check_m10() -> AccResult:
                    "comments": [], "self_check": {"verification_ran": False}}
 
     tid = create_task("M10 sha mismatch",
-                      body=(f"repo: {PILOT_REPO}\n"
+                      body=(f"{_FAKE_DATA_PREFIX}\n"
+                            f"repo: {PILOT_REPO}\n"
                             f"M10 test: sha mismatch.\n"
                             f"Write a Python feature file to src/feature.py.\n"
                             f"Push to the branch given in the context file binding section.\n"
@@ -1417,8 +1455,9 @@ def check_m10() -> AccResult:
                             f"<copy the real branch from context file binding section> "
                             f"with the actual branch name:\n"
                             f"{json.dumps(result_json)}\n"
-                            f"IMPORTANT: The artifacts[0].sha must be exactly "
-                            f"'{wrong_sha}' (40 zeros). Do NOT use the real sha.\n"
+                            f"IMPORTANT: The artifacts[0].sha is a 【测试固定值】"
+                            f"and must be exactly '{wrong_sha}' (40 zeros). "
+                            f"Do NOT use the real sha.\n"
                             f"repo and branch must match the context file exactly."),
                       skills=["talos-code-demo"])
     task_ids.append(tid)
@@ -1469,10 +1508,11 @@ def check_m10() -> AccResult:
             m10_actual_sha = art.get("sha")
             break
     if m10_actual_sha != wrong_sha:
+        # Worker refused to write fake sha → NOT_APPLICABLE
         cleanup_task(tid)
-        return AccResult("M10", "", "auto", UNVERIFIED,
-                         f"实例未按指令写入假 sha：expected {wrong_sha}, "
-                         f"got {m10_actual_sha} (branch={branch_name})",
+        return AccResult("M10", "", "auto", NOT_APPLICABLE,
+                         f"实例拒绝写入不实数据（sha={m10_actual_sha}, 期望假值={wrong_sha}）；"
+                         f"裁决分支由 tests/test_adjudicate.py::TestSelfReportedShaBranchMatching 覆盖",
                          elapsed_s=time.time()-t0, task_ids=task_ids,
                          evidence_source=ev_src)
     evidence_parts.append(f"worker output verified (sha={wrong_sha}, branch={branch_name})")
@@ -1648,6 +1688,10 @@ def check_m14() -> AccResult:
                       skills=["talos-acc-blocked"], max_retries=2)
     task_ids.append(tid)
 
+    # M14 expects 2 runs: run#1 status=blocked → verdict unmet →
+    # comment with summary → task back to ready → run#2 → done.
+    # Wait for run#1 adjudication (unmet → ready), then wait for
+    # run#2 to reach terminal state.
     task = wait_for_adjudication(tid, timeout=600)
     if not task:
         return AccResult("M14", "", "auto", UNVERIFIED,
@@ -1657,13 +1701,31 @@ def check_m14() -> AccResult:
     run_id = task.get("current_run_id")
     evidence_parts.append(f"task: run_id={run_id}, status={task['status']}")
 
+    # Check run#1 verdict (should be unmet)
+    verdict_path = archive_dir(tid, run_id) / "verdict.json"
+    run1_unmet = False
+    if verdict_path.exists():
+        verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+        run1_unmet = verdict.get("status") == "unmet"
+        evidence_parts.append(f"run#1 verdict={verdict.get('status')}")
+
+    # Check comments for summary
     comments = get_comments(tid)
     executor_comments = [c for c in comments if c.get("author") == EXECUTOR_AUTHOR]
     has_summary = any(worker_summary[:30] in c.get("body", "") for c in executor_comments)
     evidence_parts.append(f"comment has summary: {has_summary}")
 
-    is_ready = task["status"] == "ready"
-    if is_ready and has_summary:
+    # Check task went back to ready (before run#2)
+    events = get_task_events(tid)
+    went_ready = any(e.get("kind") == "adjudication_unmet" for e in events)
+    evidence_parts.append(f"task went ready after run#1: {went_ready}")
+
+    # Wait for run#2 to terminal
+    wait_for_terminal(tid, timeout=300)
+    task2 = get_task(tid)
+    evidence_parts.append(f"final status={task2['status'] if task2 else 'None'}")
+
+    if run1_unmet and has_summary and went_ready:
         return AccResult("M14", "", "auto", PASS,
                          "; ".join(evidence_parts),
                          elapsed_s=time.time()-t0, task_ids=task_ids)
@@ -1738,8 +1800,8 @@ def check_m16() -> AccResult:
     # updates every tick. We wait 15s (> 2 ticks at 5s interval) and verify
     # heartbeat is updating and task is still running.
     tid = create_task("M16 heartbeat",
-                      body=f"repo: {PILOT_REPO}\nM16 test: heartbeat (long running)",
-                      skills=["talos-code-demo"])
+                      body=f"repo: {PILOT_REPO}\nM16 test: heartbeat (long running). Sleep for 1900 seconds before writing result.json.",
+                      skills=["talos-acc-timeout"], max_runtime_seconds=2400)
     task_ids.append(tid)
 
     # Wait for dispatch
@@ -1754,7 +1816,7 @@ def check_m16() -> AccResult:
     evidence_parts.append(f"initial heartbeat: {hb1}")
 
     # Wait a few ticks
-    time.sleep(15)
+    time.sleep(1900)
     task2 = get_task_dict(tid)
     hb2 = task2.get("last_heartbeat_at") if task2 else None
     evidence_parts.append(f"heartbeat after 15s: {hb2}")
@@ -2604,7 +2666,7 @@ def check_m28() -> AccResult:
                    "comments": [], "self_check": {"verification_ran": False}}
 
     tid = create_task("M28 artifact filter",
-                      body=(f""
+                      body=(f"{_FAKE_DATA_PREFIX}\n"
                             "Create out/a.md.\n"
                             f"Write result.json: {json.dumps(result_json)}"),
                       skills=["talos-acc-tamper"])
@@ -2812,7 +2874,8 @@ def check_a2b() -> AccResult:
                                   "notes": "lying about repo"}}
 
     tid = create_task("A2b fake repo fraud",
-                      body=(f"repo: {PILOT_REPO}\n"
+                      body=(f"{_FAKE_DATA_PREFIX}\n"
+                            f"repo: {PILOT_REPO}\n"
                             f"A2b test: fake repo in artifacts.\n"
                             f"Push to the branch given in the context file binding section.\n"
                             f"Do not choose your own branch name.\n"
@@ -2846,16 +2909,12 @@ def check_a2b() -> AccResult:
             return AccResult("A2b", "", "auto", PASS,
                              "; ".join(evidence_parts),
                              elapsed_s=time.time()-t0, task_ids=task_ids)
-        # If worker refused to write the fake repo (honest behavior),
-        # verdict.artifacts will contain the real repo (not fake) and
-        # self_reported_artifacts will also not contain the fake repo.
-        # This is still a pass: the adjudicator's filter works because
-        # there is nothing fake to filter — the worker self-corrected.
-        if not fake_in_verified and not fake_in_self:
-            evidence_parts.append("worker refused to write fake repo (honest behavior); adjudicator filter N/A")
+        # Worker refused to write fake repo → NOT_APPLICABLE
+        if not fake_in_self:
             cleanup_task(tid)
-            return AccResult("A2b", "", "auto", PASS,
-                             "; ".join(evidence_parts),
+            return AccResult("A2b", "", "auto", NOT_APPLICABLE,
+                             "实例拒绝写入不实数据（fake repo not in self_reported_artifacts）；"
+                             "裁决分支由 tests/test_adjudicate.py::test_artifact_repo_filter 覆盖",
                              elapsed_s=time.time()-t0, task_ids=task_ids)
     else:
         evidence_parts.append("verdict.json not found")
