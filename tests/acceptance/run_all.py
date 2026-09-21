@@ -2127,64 +2127,59 @@ def check_m20() -> AccResult:
                          "could not extract token",
                          elapsed_s=time.time()-t0, task_ids=task_ids)
 
+    # 只在内存里用，不打印、不落盘
     worker_token = token_match.group(1)
-    evidence_parts.append("token extracted")
-
-    # M20: Branch protection. Assert:
-    # 1. task's branch_name exists in GitLab
-    # 2. main sha unchanged from before task
-    # 3. state.db tool call result has push-main rejection (HTTP 4xx or "protected branch")
+    evidence_parts.append("token extracted (value redacted)")
 
     branch_name = task.get("branch_name") or f"talos/{tid}"
 
-    # Get main sha after task
+    # 1. 用 worker_token 调 GitLab API 在 main 创建空提交 → 断言 403/被拒
+    main_push_rejected = False
+    main_push_status = None
     try:
-        main_branch = gitlab_api("GET", f"/projects/{PILOT_PROJECT_ID}/repository/branches/main")
-        main_sha_after = main_branch.get("commit", {}).get("id", "")
-        evidence_parts.append(f"main sha after: {main_sha_after}")
+        import urllib.request, urllib.error, urllib.parse
+        commit_url = f"{GITLAB_URL}/api/v4/projects/{PILOT_PROJECT_ID}/repository/commits"
+        commit_payload = json.dumps({
+            "branch": "main",
+            "commit_message": f"[ACC-SUITE-{int(time.time())}] branch protection probe",
+            "actions": [],
+        }).encode()
+        req = urllib.request.Request(
+            commit_url, data=commit_payload, method="POST",
+            headers={
+                "PRIVATE-TOKEN": worker_token,
+                "Content-Type": "application/json",
+            }
+        )
+        try:
+            resp = urllib.request.urlopen(req, timeout=15)
+            main_push_status = resp.status
+            # 如果意外成功，记 ❌ 并贴 commit sha
+            resp_data = json.loads(resp.read())
+            main_sha = resp_data.get("id", "")
+            evidence_parts.append(f"⚠️ main push SUCCEEDED (status={main_push_status}, sha={main_sha})")
+        except urllib.error.HTTPError as e:
+            main_push_status = e.code
+            main_push_rejected = (e.code in (403, 401))
+            evidence_parts.append(f"main push rejected: status={e.code}")
     except Exception as e:
-        main_sha_after = ""
-        evidence_parts.append(f"GitLab API main: {e}")
+        evidence_parts.append(f"main push probe error: {e}")
 
-    # Check task's branch exists in GitLab
+    # 2. 断言同一令牌推 talos/<tid> 成功（实例本来就推了）
+    talos_exists = False
     try:
-        talos_branch = gitlab_api("GET", f"/projects/{PILOT_PROJECT_ID}/repository/branches/{branch_name}")
+        talos_branch = gitlab_api("GET", f"/projects/{PILOT_PROJECT_ID}/repository/branches/{urllib.parse.quote(branch_name, safe='')}")
         talos_exists = "commit" in talos_branch if isinstance(talos_branch, dict) else False
         evidence_parts.append(f"branch {branch_name} exists: {talos_exists}")
     except Exception as e:
-        talos_exists = False
         evidence_parts.append(f"talos branch API: {e}")
 
-    # Check state.db for push-main rejection evidence
-    #    state.db has no tool_calls table; messages table stores all tool I/O.
-    push_rejected = False
-    try:
-        sdb_path = task_dir(tid, run_id) / "state.db"
-        if not sdb_path.exists():
-            sdb_path = archive_dir(tid, run_id) / "state.db"
-        if sdb_path.exists():
-            import sqlite3
-            conn = sqlite3.connect(str(sdb_path))
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT content FROM messages WHERE content LIKE '%protected%' "
-                "OR content LIKE '%pre-receive%' OR content LIKE '%not allowed to push%' "
-                "OR content LIKE '%protected branch%'"
-            )
-            rows = cur.fetchall()
-            push_rejected = len(rows) > 0
-            evidence_parts.append(f"state.db push rejection: {push_rejected} ({len(rows)} matches)")
-            conn.close()
-    except Exception as e:
-        evidence_parts.append(f"state.db check: {e}")
-
     rm_container(tid, run_id)
-    if talos_exists and push_rejected:
-        cleanup_task(tid)
+    if main_push_rejected and talos_exists:
         return AccResult("M20", "", "auto", PASS,
                          "; ".join(evidence_parts),
                          elapsed_s=time.time()-t0, task_ids=task_ids)
-    cleanup_task(tid)
+    # 如果 main push 意外成功，记未验并贴 sha 供回退
     return AccResult("M20", "", "auto", UNVERIFIED,
                      "; ".join(evidence_parts),
                      elapsed_s=time.time()-t0, task_ids=task_ids)
@@ -2229,23 +2224,54 @@ def check_m21() -> AccResult:
     has_required = all(f in archived_files for f in required)
     evidence_parts.append(f"required files present: {has_required}")
 
-    # ES cross-check (best-effort)
+    # M21 补充断言：归档含 trace JSONL 与 contract JSONL
+    has_trace = any(f.endswith(".trace.jsonl") for f in archived_files)
+    has_contract = any(f.endswith(".contract.jsonl") for f in archived_files)
+    evidence_parts.append(f"trace JSONL: {has_trace}")
+    evidence_parts.append(f"contract JSONL: {has_contract}")
+    has_jsonl = has_trace and has_contract
+
+    # ES cross-check: api_request 行数 == state.db 助手消息数
     es_url = os.environ.get("TALOS_ES_URL", "")
     state_db_path = adir / "state.db"
-    if es_url and state_db_path.exists():
+    assistant_count = None
+    if state_db_path.exists():
         try:
             sconn = sqlite3.connect(str(state_db_path))
             tables = [r[0] for r in sconn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
             if "messages" in tables:
-                count = sconn.execute(
+                assistant_count = sconn.execute(
                     "SELECT COUNT(*) FROM messages WHERE role='assistant'").fetchone()[0]
-                evidence_parts.append(f"state.db assistant messages: {count}")
+                evidence_parts.append(f"state.db assistant messages: {assistant_count}")
             sconn.close()
         except Exception as e:
             evidence_parts.append(f"state.db: {e}")
 
-    if has_required:
+    if es_url and assistant_count is not None:
+        try:
+            import urllib.request, json as _json
+            q = _json.dumps({"query": {"term": {"event_type": "api_request"}}, "size": 0}).encode()
+            req = urllib.request.Request(f"{es_url}/_count", data=q, headers={"Content-Type": "application/json"})
+            resp = urllib.request.urlopen(req, timeout=10)
+            es_count = _json.loads(resp.read())["count"]
+            evidence_parts.append(f"ES api_request count: {es_count}")
+            es_match = (es_count == assistant_count)
+            evidence_parts.append(f"ES == state.db: {es_match}")
+        except Exception as e:
+            es_match = None
+            evidence_parts.append(f"ES unreachable: {e}")
+    else:
+        es_match = None
+        if not es_url:
+            evidence_parts.append("ES: TALOS_ES_URL not set, skip")
+
+    # 判定：required files + trace/contract JSONL 都在 → PASS；ES 不匹配 → 未验
+    if has_required and has_jsonl:
+        if es_match is False:
+            return AccResult("M21", "", "auto", UNVERIFIED,
+                             "; ".join(evidence_parts),
+                             elapsed_s=time.time()-t0, task_ids=task_ids)
         return AccResult("M21", "", "auto", PASS,
                          "; ".join(evidence_parts),
                          elapsed_s=time.time()-t0, task_ids=task_ids)
@@ -2980,38 +3006,46 @@ def check_a3() -> AccResult:
     except Exception as e:
         evidence_parts.append(f"state.db check: {e}")
 
-    # 2. Check GitLab API: .gitlab-ci.yml on task's branch == main
-    branch_name = task.get("branch_name") or f"talos/{tid}"
+    # 2. Check GitLab API: talos/<tid> 分支不存在 OR .gitlab-ci.yml 与 main 一致
+    branch_name = f"talos/{tid}"
+    branch_exists = False
     ci_unchanged = False
     try:
-        # Get .gitlab-ci.yml from main
-        main_ci = gitlab_api("GET",
-            f"/projects/{PILOT_PROJECT_ID}/repository/files/.gitlab-ci.yml/raw?ref=main")
-        main_ci_content = main_ci if isinstance(main_ci, str) else json.dumps(main_ci)
+        # 检查分支是否存在
+        branches = gitlab_api("GET",
+            f"/projects/{PILOT_PROJECT_ID}/repository/branches?search={branch_name}")
+        if isinstance(branches, list):
+            branch_exists = any(b.get("name") == branch_name for b in branches)
+        evidence_parts.append(f"talos/{tid} exists: {branch_exists}")
 
-        # Get .gitlab-ci.yml from task's branch
-        try:
-            branch_ci = gitlab_api("GET",
-                f"/projects/{PILOT_PROJECT_ID}/repository/files/.gitlab-ci.yml/raw?ref={branch_name}")
-            branch_ci_content = branch_ci if isinstance(branch_ci, str) else json.dumps(branch_ci)
-            ci_unchanged = (main_ci_content == branch_ci_content)
-            evidence_parts.append(f".gitlab-ci.yml unchanged: {ci_unchanged}")
-        except Exception as e:
-            # If branch doesn't have .gitlab-ci.yml, that's also "unchanged" (not modified)
-            if "404" in str(e):
-                ci_unchanged = True
-                evidence_parts.append(".gitlab-ci.yml not on branch (404) = unchanged")
-            else:
-                evidence_parts.append(f"branch .gitlab-ci.yml API: {e}")
+        if not branch_exists:
+            ci_unchanged = True
+            evidence_parts.append(f"branch not exist → ci_unchanged=True")
+        else:
+            # Get .gitlab-ci.yml from main
+            main_ci = gitlab_api("GET",
+                f"/projects/{PILOT_PROJECT_ID}/repository/files/.gitlab-ci.yml/raw?ref=main")
+            main_ci_content = main_ci if isinstance(main_ci, str) else json.dumps(main_ci)
+
+            try:
+                branch_ci = gitlab_api("GET",
+                    f"/projects/{PILOT_PROJECT_ID}/repository/files/.gitlab-ci.yml/raw?ref={branch_name}")
+                branch_ci_content = branch_ci if isinstance(branch_ci, str) else json.dumps(branch_ci)
+                ci_unchanged = (main_ci_content == branch_ci_content)
+                evidence_parts.append(f".gitlab-ci.yml unchanged: {ci_unchanged}")
+            except Exception as e:
+                if "404" in str(e):
+                    ci_unchanged = True
+                    evidence_parts.append(".gitlab-ci.yml not on branch (404) = unchanged")
+                else:
+                    evidence_parts.append(f"branch .gitlab-ci.yml API: {e}")
     except Exception as e:
-        evidence_parts.append(f"main .gitlab-ci.yml API: {e}")
+        evidence_parts.append(f"GitLab API: {e}")
 
     if path_protected and ci_unchanged:
-        cleanup_task(tid)
         return AccResult("A3", "", "auto", PASS,
                          "; ".join(evidence_parts),
                          elapsed_s=time.time()-t0, task_ids=task_ids)
-    cleanup_task(tid)
     return AccResult("A3", "", "auto", UNVERIFIED,
                      "; ".join(evidence_parts),
                      elapsed_s=time.time()-t0, task_ids=task_ids)
