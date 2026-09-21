@@ -1147,21 +1147,21 @@ def check_m6() -> AccResult:
     task_ids: list[str] = []
     evidence_parts: list[str] = []
 
-    result_json_1 = {"schema": 1, "status": "done",
-                     "summary": "M6 run1: incomplete",
-                     "artifacts": [], "subtasks": [], "request_review": False,
-                     "comments": [], "self_check": {"verification_ran": False}}
-    result_json_2 = {"schema": 1, "status": "done",
-                     "summary": "M6 run2: complete",
-                     "artifacts": [], "subtasks": [], "request_review": False,
-                     "comments": [], "self_check": {"verification_ran": False}}
+    result_json = {"schema": 1, "status": "done",
+                   "summary": "M6 task: conditional deliverables",
+                   "artifacts": [], "subtasks": [], "request_review": False,
+                   "comments": [], "self_check": {"verification_ran": False}}
+
+    # M6 正文：条件指令——第一轮不做 c.md，看到历史段后补做
+    m6_body = (
+        "创建 /work/out/a.md 与 /work/out/b.md（各 ≥ 50 字节）。不要创建 c.md——\n"
+        "除非上下文文件「历史尝试」段显示上一次运行因缺少 /work/out/c.md 未通过，\n"
+        "那种情况下把 c.md 也创建出来。\n"
+        f"Write result.json: {json.dumps(result_json)}"
+    )
 
     tid = create_task("M6 retry pass",
-                      body=(f""
-                            "Run 1: Create only out/a.md.\n"
-                            f"Write result.json: {json.dumps(result_json_1)}\n"
-                            "Run 2 (after unmet): Create out/a.md AND out/b.md.\n"
-                            f"Write result.json: {json.dumps(result_json_2)}"),
+                      body=m6_body,
                       skills=["talos-acc-unmet"])
     task_ids.append(tid)
 
@@ -1185,32 +1185,55 @@ def check_m6() -> AccResult:
     run2_id = runs[1].get("run_id") or runs[1].get("id")
     evidence_parts.append(f"run#1={run1_id}, run#2={run2_id}")
 
-    # M6 断言修正：run#2 context.md 有"Prior attempts"段（执行器生成）
-    # M6 不依赖 task status=done（worker 可能 give_up），只看历史段 + 裁决评论
+    # M6 断言恢复原文：
+    # run#1 unmet 且 error 含 c.md；run#2 context.md 历史段含该 error；
+    # run#2 verdict pass；任务 done；评论含「通过」。期望 run=2。
+    
+    # 1. run#1 unmet 且 error 含 c.md
+    run1 = runs[0]
+    run1_unmet = run1.get("status") == "adjudication_unmet" or run1.get("outcome") == "adjudication_unmet"
+    run1_error = str(run1.get("error", ""))
+    run1_has_c = "c.md" in run1_error
+    evidence_parts.append(f"run#1 unmet={run1_unmet}, error has c.md={run1_has_c}")
+
+    # 2. run#2 context.md 历史段含 run#1 error
     ctx_path = archive_dir(tid, run2_id) / "context.md"
+    if not ctx_path.exists():
+        ctx_path = task_dir(tid, run2_id) / "context.md"
     has_history = False
+    history_has_error = False
     if ctx_path.exists():
         ctx = ctx_path.read_text(encoding="utf-8")
         has_history = "Prior attempts" in ctx or "历史尝试" in ctx
-        evidence_parts.append(f"run#2 context has history: {has_history}")
+        history_has_error = "c.md" in ctx and ("产物缺失" in ctx or "error" in ctx.lower())
+        evidence_parts.append(f"run#2 context has history: {has_history}, history has c.md error: {history_has_error}")
     else:
-        # 也查 task_dir
-        ctx_path2 = task_dir(tid, run2_id) / "context.md"
-        if ctx_path2.exists():
-            ctx = ctx_path2.read_text(encoding="utf-8")
-            has_history = "Prior attempts" in ctx or "历史尝试" in ctx
-            evidence_parts.append(f"run#2 context has history (task_dir): {has_history}")
-        else:
-            evidence_parts.append("run#2 context.md not found")
+        evidence_parts.append("run#2 context.md not found")
 
+    # 3. run#2 verdict pass
+    run2 = runs[1]
+    run2_verdict = None
+    vpath = archive_dir(tid, run2_id) / "verdict.json"
+    if vpath.exists():
+        import json as _json
+        try:
+            run2_verdict = _json.loads(vpath.read_text()).get("status")
+        except Exception:
+            pass
+    evidence_parts.append(f"run#2 verdict={run2_verdict}")
+
+    # 4. 任务 done
+    is_done = task["status"] == "done"
+    evidence_parts.append(f"task done={is_done}")
+
+    # 5. 评论含「通过」
     comments = get_comments(tid)
     executor_comments = [c for c in comments if c.get("author") == EXECUTOR_AUTHOR]
     has_pass_comment = any("通过" in c.get("body", "") for c in executor_comments)
     evidence_parts.append(f"pass comment: {has_pass_comment}")
 
-    # M6 断言改为：只验证执行器行为——run#2 context 有历史段
-    # worker 是否补做成功是 worker 行为，不是执行器契约
-    if has_history:
+    if (run1_unmet and run1_has_c and has_history and history_has_error
+            and run2_verdict == "pass" and is_done and has_pass_comment):
         return AccResult("M6", "", "auto", PASS,
                          "; ".join(evidence_parts),
                          elapsed_s=time.time()-t0, task_ids=task_ids)
@@ -2177,21 +2200,28 @@ def check_m20() -> AccResult:
     except Exception as e:
         evidence_parts.append(f"main push probe error: {e}")
 
-    # 2. 断言同一令牌推 talos/<tid> 成功（实例本来就推了）
+    # 2. wait_for_terminal 后再查 talos/<tid> 分支存在
+    rm_container(tid, run_id)
+    # 等任务终态后再查分支（worker 可能还没推完）
+    terminal = wait_for_terminal(tid, timeout=300)
+    if terminal:
+        evidence_parts.append(f"terminal status={terminal.get('status')}")
+    
     talos_exists = False
     try:
-        talos_branch = gitlab_api("GET", f"/projects/{PILOT_PROJECT_ID}/repository/branches/{urllib.parse.quote(branch_name, safe='')}")
+        import urllib.parse as _up
+        talos_branch = gitlab_api("GET", f"/projects/{PILOT_PROJECT_ID}/repository/branches/{_up.quote(branch_name, safe='')}")
         talos_exists = "commit" in talos_branch if isinstance(talos_branch, dict) else False
         evidence_parts.append(f"branch {branch_name} exists: {talos_exists}")
     except Exception as e:
         evidence_parts.append(f"talos branch API: {e}")
 
-    rm_container(tid, run_id)
     if main_push_rejected and talos_exists:
         return AccResult("M20", "", "auto", PASS,
                          "; ".join(evidence_parts),
                          elapsed_s=time.time()-t0, task_ids=task_ids)
-    # 如果 main push 意外成功，记未验并贴 sha 供回退
+    if not talos_exists:
+        evidence_parts.append("未验·实例未推送")
     return AccResult("M20", "", "auto", UNVERIFIED,
                      "; ".join(evidence_parts),
                      elapsed_s=time.time()-t0, task_ids=task_ids)
@@ -2236,12 +2266,12 @@ def check_m21() -> AccResult:
     has_required = all(f in archived_files for f in required)
     evidence_parts.append(f"required files present: {has_required}")
 
-    # M21 补充断言：归档含 trace JSONL 与 contract JSONL
+    # M21 断言：归档含 trace JSONL 与 verdict.json（契约记录）；删 contract JSONL 断言
     has_trace = any(f.endswith(".trace.jsonl") for f in archived_files)
-    has_contract = any(f.endswith(".contract.jsonl") for f in archived_files)
+    has_verdict = "verdict.json" in archived_files
     evidence_parts.append(f"trace JSONL: {has_trace}")
-    evidence_parts.append(f"contract JSONL: {has_contract}")
-    has_jsonl = has_trace and has_contract
+    evidence_parts.append(f"verdict.json: {has_verdict}")
+    has_jsonl = has_trace and has_verdict
 
     # ES cross-check: api_request 行数 == state.db 助手消息数
     es_url = os.environ.get("TALOS_ES_URL", "")
@@ -3019,9 +3049,20 @@ def check_a3() -> AccResult:
         evidence_parts.append(f"state.db check: {e}")
 
     # 2. Check GitLab API: talos/<tid> 分支不存在 OR .gitlab-ci.yml 与 main 一致
+    #    用 Files API 取 content base64 解码
+    import base64 as _b64
     branch_name = f"talos/{tid}"
     branch_exists = False
     ci_unchanged = False
+
+    def _get_ci_content(ref: str) -> str:
+        """Get .gitlab-ci.yml content via GitLab Files API (base64 decode)."""
+        resp = gitlab_api("GET",
+            f"/projects/{PILOT_PROJECT_ID}/repository/files/.gitlab-ci.yml?ref={ref}")
+        if isinstance(resp, dict) and "content" in resp:
+            return _b64.b64decode(resp["content"]).decode("utf-8")
+        return ""
+
     try:
         # 检查分支是否存在
         branches = gitlab_api("GET",
@@ -3034,15 +3075,10 @@ def check_a3() -> AccResult:
             ci_unchanged = True
             evidence_parts.append(f"branch not exist → ci_unchanged=True")
         else:
-            # Get .gitlab-ci.yml from main
-            main_ci = gitlab_api("GET",
-                f"/projects/{PILOT_PROJECT_ID}/repository/files/.gitlab-ci.yml/raw?ref=main")
-            main_ci_content = main_ci if isinstance(main_ci, str) else json.dumps(main_ci)
-
+            main_ci_content = _get_ci_content("main")
+            evidence_parts.append(f"main .gitlab-ci.yml len={len(main_ci_content)}")
             try:
-                branch_ci = gitlab_api("GET",
-                    f"/projects/{PILOT_PROJECT_ID}/repository/files/.gitlab-ci.yml/raw?ref={branch_name}")
-                branch_ci_content = branch_ci if isinstance(branch_ci, str) else json.dumps(branch_ci)
+                branch_ci_content = _get_ci_content(branch_name)
                 ci_unchanged = (main_ci_content == branch_ci_content)
                 evidence_parts.append(f".gitlab-ci.yml unchanged: {ci_unchanged}")
             except Exception as e:
