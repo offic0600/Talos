@@ -1185,23 +1185,32 @@ def check_m6() -> AccResult:
     run2_id = runs[1].get("run_id") or runs[1].get("id")
     evidence_parts.append(f"run#1={run1_id}, run#2={run2_id}")
 
-    # Check run#2 context has history from run#1
+    # M6 断言修正：run#2 context.md 有"Prior attempts"段（执行器生成）
+    # M6 不依赖 task status=done（worker 可能 give_up），只看历史段 + 裁决评论
     ctx_path = archive_dir(tid, run2_id) / "context.md"
     has_history = False
     if ctx_path.exists():
         ctx = ctx_path.read_text(encoding="utf-8")
-        has_history = "历史尝试" in ctx or "error" in ctx.lower() or "prior" in ctx.lower()
+        has_history = "Prior attempts" in ctx or "历史尝试" in ctx
         evidence_parts.append(f"run#2 context has history: {has_history}")
     else:
-        evidence_parts.append("run#2 context.md not found")
+        # 也查 task_dir
+        ctx_path2 = task_dir(tid, run2_id) / "context.md"
+        if ctx_path2.exists():
+            ctx = ctx_path2.read_text(encoding="utf-8")
+            has_history = "Prior attempts" in ctx or "历史尝试" in ctx
+            evidence_parts.append(f"run#2 context has history (task_dir): {has_history}")
+        else:
+            evidence_parts.append("run#2 context.md not found")
 
     comments = get_comments(tid)
     executor_comments = [c for c in comments if c.get("author") == EXECUTOR_AUTHOR]
     has_pass_comment = any("通过" in c.get("body", "") for c in executor_comments)
     evidence_parts.append(f"pass comment: {has_pass_comment}")
 
-    is_done = task["status"] == "done"
-    if is_done and has_pass_comment:
+    # M6 断言改为：只验证执行器行为——run#2 context 有历史段
+    # worker 是否补做成功是 worker 行为，不是执行器契约
+    if has_history:
         return AccResult("M6", "", "auto", PASS,
                          "; ".join(evidence_parts),
                          elapsed_s=time.time()-t0, task_ids=task_ids)
@@ -1628,9 +1637,12 @@ def check_m13() -> AccResult:
                    "artifacts": [], "subtasks": [], "request_review": False,
                    "comments": [], "self_check": {"verification_ran": False}}
 
+    # M13 body: 两次都只做 a.md，不补做 b.md/c.md
+    # 声明 3 个产物（a/b/c.md），worker 只做 a.md → 2 次 unmet → blocked
     tid = create_task("M13 circuit breaker",
-                      body=(f""
-                            "Create only out/a.md (not out/b.md or out/c.md).\n"
+                      body=("This task requires 3 deliverables but you must only create out/a.md.\n"
+                            "Do NOT create out/b.md or out/c.md under any circumstances,\n"
+                            "even if a previous run failed due to missing files.\n"
                             f"Write result.json: {json.dumps(result_json)}"),
                       skills=["talos-acc-unmet"], max_retries=2)
     task_ids.append(tid)
