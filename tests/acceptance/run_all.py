@@ -1801,7 +1801,7 @@ def check_m16() -> AccResult:
     # heartbeat is updating and task is still running.
     tid = create_task("M16 heartbeat",
                       body=f"repo: {PILOT_REPO}\nM16 test: heartbeat (long running). Sleep for 1900 seconds before writing result.json.",
-                      skills=["talos-acc-timeout"], max_runtime_seconds=2400)
+                      skills=["talos-acc-timeout"], max_runtime=2400)
     task_ids.append(tid)
 
     # Wait for dispatch
@@ -3059,23 +3059,30 @@ def run_item(item: AccItem, run_manual: bool = False, executor_pid: int = 0) -> 
                          details=traceback.format_exc()[:500],
                          elapsed_s=elapsed)
     finally:
-        # §2.1: 每项收尾必须清场 — archive this item's tasks + worker subtasks
-        # so the executor stops dispatching them and spawn slots free up.
-        # For _EXPECTED_RUNS_2 items, wait for run#2 to reach a terminal
-        # state before cleaning up (unmet → ready → run#2 → done/blocked).
+        # §2.1 + 清场时机规则: cleanup_task 只允许在任务到达终态后调用。
+        # 先 wait_for_terminal()，超时不归档，把任务号写进报告让人处理。
         if item.fn is not None and (item.category == "auto" or run_manual):
             _cleanup_ids = getattr(locals().get("result", None), "task_ids", None) or []
-            if item.item_id in _EXPECTED_RUNS_2:
-                for tid in _cleanup_ids:
-                    try:
-                        wait_for_terminal(tid, timeout=300)
-                    except Exception:
-                        pass
+            _pending: list[str] = []
             for tid in _cleanup_ids:
+                try:
+                    terminal = wait_for_terminal(tid, timeout=300)
+                    if terminal is None:
+                        _pending.append(tid)
+                except Exception:
+                    _pending.append(tid)
+            for tid in _cleanup_ids:
+                if tid in _pending:
+                    continue  # 未到终态，不归档
                 try:
                     cleanup_task(tid)
                 except Exception:
                     pass
+            # 把未到终态的任务号写入结果证据
+            if _pending:
+                _r = locals().get("result")
+                if _r is not None:
+                    _r.evidence += f"; ⚠️ 未到终态未归档: {','.join(_pending)}"
 
 
 def main():
