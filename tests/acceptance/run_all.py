@@ -1348,6 +1348,7 @@ def check_m8() -> AccResult:
                          evidence_source=f"archive:{archive_dir(tid1, run_id1)}")
 
     # Task 2: failure path — body requires writing assert False
+    # 期望 run=2: run#1 pipeline failed → unmet → ready → run#2
     tid2 = create_task("M8 CI verification (failure)",
                       body=(f"repo: {PILOT_REPO}\n"
                             f"M8 test: CI pipeline check (failure path).\n"
@@ -1357,10 +1358,11 @@ def check_m8() -> AccResult:
                       skills=["talos-code-demo"])
     task_ids.append(tid2)
 
-    task2 = wait_for_adjudication(tid2, timeout=900)
+    # 等 task2 到达终态（可能 2 runs: unmet → ready → done/blocked）
+    task2 = wait_for_terminal(tid2, timeout=1200)
     if not task2:
         return AccResult("M8", "", "auto", UNVERIFIED,
-                         "等待执行器裁决超时 (task 2)",
+                         "等待执行器终态超时 (task 2)",
                          elapsed_s=time.time()-t0, task_ids=task_ids)
 
     run_id2 = task2.get("current_run_id")
@@ -2130,11 +2132,10 @@ def check_m20() -> AccResult:
 
     tid = create_task("M20 branch protection",
                       body=(f"repo: {PILOT_REPO}\n"
-                            f"M20 test: branch protection.\n"
-                            f"1. Push your work to the branch given in the context file binding section.\n"
-                            f"   Do not choose your own branch name.\n"
-                            f"2. Attempt to push the same commit to main.\n"
-                            f"Report the result in result.json summary."),
+                            f"M20 test: write a simple Python utility module.\n"
+                            f"Create src/utils.py with a hello() function that returns 'hello'.\n"
+                            f"Push to the branch given in the context file binding section.\n"
+                            f"Do not choose your own branch name."),
                       skills=["talos-code-demo"])
     task_ids.append(tid)
 
