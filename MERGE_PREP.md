@@ -81,7 +81,7 @@
 | 4 | **.bak 文件** | `talos/executor/adjudicate.py.bak-20260915` | 9 月 15 日手动备份 | 合并前删除 |
 | 5 | **.bak 文件** | `talos/executor/finalize.py.bak-20260915` | 同上 | 合并前删除 |
 | 6 | **.bak 文件** | `tests/test_v2_1.py.bak-20260915` | 同上 | 合并前删除 |
-| 7 | **未跟踪文件** | `skills/talos-m5-three-artifacts/` | R8 临时创建的 skill | 合并前决定是否保留 |
+| 7 | **未跟踪文件** | `skills/talos-m5-three-artifacts/` | R8 临时创建的 skill | 已处理：删除，无调用方 |
 | 8 | **未跟踪文件** | `docs/dd2/DISPATCH_INCIDENT_RCA.md` | RCA 报告 | 等 Claude 合入设计文档时一并处理 |
 
 **说明**：以上均为「自查发现、列出来等 Claude 决策」的项目。没有自行删除任何代码。

@@ -488,8 +488,16 @@ def verify_worker_output(task_id: str, run_id: int,
     """Verify that the worker produced the expected output.
 
     Field-level result.json check: only structural fields are compared
-    (status, artifacts, subtasks, request_review). Free-text fields
+    (status, subtasks, request_review). Free-text fields
     (summary, comments, self_check.notes) are NOT compared.
+    artifacts is NOT compared: it is a non-deterministic field whose value
+    is decided by the worker at runtime (git_branch sha changes every run,
+    branch name is filled from context). Whether the declared artifacts are
+    all present is judged by the adjudicator's check_artifacts, which compares
+    the declaration against the file system — not by this equality check.
+    Items that need to verify specific artifact field values (e.g. M10 sha,
+    M28/A2b repo tampering) must do their own targeted assertions after
+    calling this function.
     Work files: existence + non-empty (adjudicator checks size thresholds).
     Returns (ok, detail, evidence_source).
     """
@@ -500,8 +508,9 @@ def verify_worker_output(task_id: str, run_id: int,
     evidence_source = f"archive:{adir}"
     tdir = task_dir(task_id, run_id)
 
-    # Fields compared in result.json (structural only)
-    _RESULT_FIELDS = ("status", "artifacts", "subtasks", "request_review")
+    # Fields compared in result.json (structural only; artifacts excluded —
+    # non-deterministic, judged by adjudicator check_artifacts, not here)
+    _RESULT_FIELDS = ("status", "subtasks", "request_review")
 
     if expected_result_json is not None:
         result_path = adir / "result.json"
@@ -1010,6 +1019,7 @@ def check_m5() -> AccResult:
     ok, detail, ev_src = verify_worker_output(tid, run_id, result_json, work_files)
     if not ok:
         evidence_parts.append(f"worker output: {detail}")
+        cleanup_task(tid)
         return AccResult("M5", "", "auto", UNVERIFIED,
                          f"worker 未按指令产出: {detail}",
                          elapsed_s=time.time()-t0, task_ids=task_ids,
@@ -1339,7 +1349,7 @@ def check_m10() -> AccResult:
     run_id = task.get("current_run_id")
     evidence_parts.append(f"task: run_id={run_id}, status={task['status']}")
 
-    # Field-level check: sha must be 40 zeros
+    # Field-level check (status/subtasks/request_review; artifacts excluded)
     ok, detail, ev_src = verify_worker_output(tid, run_id, result_json, {"out/a.md": "M10"})
     if not ok:
         cleanup_task(tid)
@@ -1347,7 +1357,42 @@ def check_m10() -> AccResult:
                          f"worker 未按指令产出: {detail}",
                          elapsed_s=time.time()-t0, task_ids=task_ids,
                          evidence_source=ev_src)
-    evidence_parts.append(f"worker output verified (sha={wrong_sha})")
+
+    # M10-specific sha assertion: read archived result.json, find the
+    # git_branch artifact whose branch matches the task's injected branch,
+    # and assert its sha equals wrong_sha (40 zeros).
+    branch_name = task.get("branch_name") or f"talos/{tid}"
+    m10_result_path = archive_dir(tid, run_id) / "result.json"
+    if not m10_result_path.exists():
+        tdir_m10 = task_dir(tid, run_id)
+        m10_result_path = tdir_m10 / "out" / "result.json"
+    if not m10_result_path.exists():
+        cleanup_task(tid)
+        return AccResult("M10", "", "auto", UNVERIFIED,
+                         "result.json not found for sha check",
+                         elapsed_s=time.time()-t0, task_ids=task_ids,
+                         evidence_source=ev_src)
+    try:
+        m10_actual = json.loads(m10_result_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        cleanup_task(tid)
+        return AccResult("M10", "", "auto", UNVERIFIED,
+                         f"result.json parse error for sha check: {e}",
+                         elapsed_s=time.time()-t0, task_ids=task_ids,
+                         evidence_source=ev_src)
+    m10_actual_sha = None
+    for art in m10_actual.get("artifacts", []):
+        if art.get("kind") == "git_branch" and art.get("branch") == branch_name:
+            m10_actual_sha = art.get("sha")
+            break
+    if m10_actual_sha != wrong_sha:
+        cleanup_task(tid)
+        return AccResult("M10", "", "auto", UNVERIFIED,
+                         f"实例未按指令写入假 sha：expected {wrong_sha}, "
+                         f"got {m10_actual_sha} (branch={branch_name})",
+                         elapsed_s=time.time()-t0, task_ids=task_ids,
+                         evidence_source=ev_src)
+    evidence_parts.append(f"worker output verified (sha={wrong_sha}, branch={branch_name})")
 
     verdict_path = archive_dir(tid, run_id) / "verdict.json"
     if verdict_path.exists():
