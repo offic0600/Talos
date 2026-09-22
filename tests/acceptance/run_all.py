@@ -118,6 +118,9 @@ NOT_APPLICABLE = "不适用"
 # M8 has two tasks: task1 (success) expects 1 run, task2 (failure) expects 2.
 _EXPECTED_RUNS_2 = frozenset({"M5", "M6", "M8", "M13", "M14", "M15", "M17", "A2"})
 
+# 终态集合（cleanup_task 只在这些状态后调用）
+TERMINAL_STATUSES = frozenset({"done", "blocked", "gave_up", "archived"})
+
 # Fixed prefix for tasks that instruct the worker to write fake data.
 # If the worker refuses (no fake value in result.json), the item is
 # marked NOT_APPLICABLE with a specific reason.
@@ -1358,42 +1361,59 @@ def check_m8() -> AccResult:
                       skills=["talos-code-demo"])
     task_ids.append(tid2)
 
-    # 等 task2 到达终态（可能 2 runs: unmet → ready → done/blocked）
+    # 等 task2 到达终态（可能多 runs: unmet → ready → crashed/blocked）
     task2 = wait_for_terminal(tid2, timeout=1200)
     if not task2:
         return AccResult("M8", "", "auto", UNVERIFIED,
                          "等待执行器终态超时 (task 2)",
                          elapsed_s=time.time()-t0, task_ids=task_ids)
 
-    run_id2 = task2.get("current_run_id")
-    evidence_parts.append(f"task2: run_id={run_id2}, status={task2['status']}")
+    # 查所有 runs，找第一个有 verdict.json 的 unmet + pipeline fail
+    import sqlite3 as _sqlite3
+    _db = os.path.expanduser(os.environ.get("HERMES_KANBAN_DB", "~/.hermes/kanban/kanban.db"))
+    _conn = _sqlite3.connect(_db)
+    task2_runs = _conn.execute(
+        "SELECT id, status, outcome, error FROM task_runs WHERE task_id=? ORDER BY id",
+        (tid2,)).fetchall()
+    _conn.close()
 
-    verdict_path2 = archive_dir(tid2, run_id2) / "verdict.json"
+    evidence_parts.append(f"task2: status={task2['status']}, runs={len(task2_runs)}")
+    for tr in task2_runs:
+        err_short = str(tr[3])[:80] if tr[3] else ""
+        evidence_parts.append(f"  run={tr[0]} status={tr[1]} outcome={tr[2]} error={err_short}")
+
+    # 在归档目录里找第一个 unmet + pipeline fail 的 verdict
     task2_pass = False
-    if verdict_path2.exists():
-        verdict2 = json.loads(verdict_path2.read_text(encoding="utf-8"))
-        evidence_parts.append(f"task2 verdict status={verdict2.get('status')}")
-        evidence_parts.append(f"task2 problems={verdict2.get('problems', [])}")
-        # Failure path: pipeline failed → verdict unmet
-        if verdict2.get("status") == "unmet":
-            has_pipeline_fail = any("流水线" in p or "pipeline" in p.lower() or "failed" in p.lower() for p in verdict2.get("problems", []))
-            evidence_parts.append(f"task2 has_pipeline_fail={has_pipeline_fail}")
-            if has_pipeline_fail:
-                task2_pass = True
-    else:
-        evidence_parts.append("task2 verdict.json not found")
+    best_evidence_source = ""
+    for tr in task2_runs:
+        run_id = tr[0]
+        vp = archive_dir(tid2, run_id) / "verdict.json"
+        if vp.exists():
+            v = json.loads(vp.read_text(encoding="utf-8"))
+            evidence_parts.append(f"  run={run_id} verdict status={v.get('status')}")
+            if v.get("status") == "unmet":
+                has_pipeline_fail = any(
+                    "流水线" in p or "pipeline" in p.lower() or "failed" in p.lower()
+                    for p in v.get("problems", []))
+                evidence_parts.append(f"  run={run_id} has_pipeline_fail={has_pipeline_fail}")
+                if has_pipeline_fail:
+                    task2_pass = True
+                    best_evidence_source = f"archive:{archive_dir(tid2, run_id)}"
+                    break
+        else:
+            evidence_parts.append(f"  run={run_id} verdict.json not found")
 
     if task1_pass and task2_pass:
         cleanup_task(tid2)
         return AccResult("M8", "", "auto", PASS,
                          "; ".join(evidence_parts),
                          elapsed_s=time.time()-t0, task_ids=task_ids,
-                         evidence_source=f"archive:{archive_dir(tid2, run_id2)}")
+                         evidence_source=best_evidence_source)
     cleanup_task(tid2)
     return AccResult("M8", "", "auto", UNVERIFIED,
                      "; ".join(evidence_parts),
                      elapsed_s=time.time()-t0, task_ids=task_ids,
-                     evidence_source=f"archive:{archive_dir(tid2, run_id2)}" if verdict_path2.exists() else "")
+                     evidence_source=best_evidence_source)
 
 
 # ── M9: CI pipeline timeout → defect → degraded ────────────────────────────
@@ -2139,10 +2159,17 @@ def check_m20() -> AccResult:
                       skills=["talos-code-demo"])
     task_ids.append(tid)
 
-    task = wait_for_status(tid, {"running"}, timeout=120)
+    # 等任务被派发（可能在前面任务占用 spawn slot 时需要等较久）
+    task = wait_for_status(tid, {"running"}, timeout=300)
     if not task or not task.get("current_run_id"):
+        # 没被派发就检查是否已到终态（可能是 blocked/gave_up）
+        t = get_task(tid)
+        if t and t.get("status") in TERMINAL_STATUSES:
+            return AccResult("M20", "", "auto", UNVERIFIED,
+                             f"task reached terminal without dispatch: status={t['status']}",
+                             elapsed_s=time.time()-t0, task_ids=task_ids)
         return AccResult("M20", "", "auto", UNVERIFIED,
-                         "task not dispatched",
+                         "task not dispatched (waited 300s)",
                          elapsed_s=time.time()-t0, task_ids=task_ids)
 
     run_id = task["current_run_id"]
