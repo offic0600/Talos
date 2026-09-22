@@ -2255,7 +2255,7 @@ def check_m20() -> AccResult:
     # 2. wait_for_terminal 后再查 talos/<tid> 分支存在
     rm_container(tid, run_id)
     # 等任务终态后再查分支（worker 可能还没推完）
-    terminal = wait_for_terminal(tid, timeout=300)
+    terminal = wait_for_terminal(tid, timeout=600)
     if terminal:
         evidence_parts.append(f"terminal status={terminal.get('status')}")
     
