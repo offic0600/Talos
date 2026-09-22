@@ -2253,7 +2253,7 @@ def check_m20() -> AccResult:
         evidence_parts.append(f"main push probe error: {e}")
 
     # 2. wait_for_terminal 后再查 talos/<tid> 分支存在
-    rm_container(tid, run_id)
+    # 不在此处 rm_container — 那会杀掉正在运行的 worker 容器（M20 取证修复）
     # 等任务终态后再查分支（worker 可能还没推完）
     terminal = wait_for_terminal(tid, timeout=600)
     if terminal:
