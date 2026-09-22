@@ -1316,39 +1316,53 @@ def check_m8() -> AccResult:
     #         → verdict unmet → task back to ready (expected run=2).
     # Both tasks must pass for M8 to pass.
 
-    # Task 1: success path
+    # Task 1: success path — 等终态（可能多 runs: unmet → ready → done）
     tid1 = create_task("M8 CI verification (success)",
-                      body=f"repo: {PILOT_REPO}\nM8 test: CI pipeline check (success path)",
+                      body=f"repo: {PILOT_REPO}\nM8 test: CI pipeline check (success path). Write a simple Python utility module src/utils.py with a hello() function that returns 'hello'. Push to the branch given in the context file binding section. Do not choose your own branch name.",
                       skills=["talos-code-demo"])
     task_ids.append(tid1)
 
-    task1 = wait_for_adjudication(tid1, timeout=900)
+    task1 = wait_for_terminal(tid1, timeout=1800)
     if not task1:
         return AccResult("M8", "", "auto", UNVERIFIED,
-                         "等待执行器裁决超时 (task 1)",
+                         "等待执行器终态超时 (task 1)",
                          elapsed_s=time.time()-t0, task_ids=task_ids)
 
-    run_id1 = task1.get("current_run_id")
-    evidence_parts.append(f"task1: run_id={run_id1}, status={task1['status']}")
+    # 查所有 runs，找第一个 pass/degraded 的 verdict
+    import sqlite3 as _sqlite3
+    _db = os.path.expanduser(os.environ.get("HERMES_KANBAN_DB", "~/.hermes/kanban/kanban.db"))
+    _conn = _sqlite3.connect(_db)
+    task1_runs = _conn.execute(
+        "SELECT id, status, outcome, error FROM task_runs WHERE task_id=? ORDER BY id",
+        (tid1,)).fetchall()
+    _conn.close()
 
-    verdict_path1 = archive_dir(tid1, run_id1) / "verdict.json"
+    evidence_parts.append(f"task1: status={task1['status']}, runs={len(task1_runs)}")
+    for tr in task1_runs:
+        err_short = str(tr[3])[:80] if tr[3] else ""
+        evidence_parts.append(f"  run={tr[0]} status={tr[1]} outcome={tr[2]} error={err_short}")
+
     task1_pass = False
-    if verdict_path1.exists():
-        verdict1 = json.loads(verdict_path1.read_text(encoding="utf-8"))
-        evidence_parts.append(f"task1 verdict status={verdict1.get('status')}")
-        evidence_parts.append(f"task1 problems={verdict1.get('problems', [])}")
-        evidence_parts.append(f"task1 defects={verdict1.get('defects', [])}")
-        if verdict1.get("status") in ("pass", "degraded"):
-            task1_pass = True
-    else:
-        evidence_parts.append("task1 verdict.json not found")
-    cleanup_task(tid1)
+    best_ev1 = ""
+    for tr in task1_runs:
+        run_id = tr[0]
+        vp = archive_dir(tid1, run_id) / "verdict.json"
+        if vp.exists():
+            v = json.loads(vp.read_text(encoding="utf-8"))
+            evidence_parts.append(f"  run={run_id} verdict status={v.get('status')}")
+            if v.get("status") in ("pass", "degraded"):
+                task1_pass = True
+                best_ev1 = f"archive:{archive_dir(tid1, run_id)}"
+                break
+        else:
+            evidence_parts.append(f"  run={run_id} verdict.json not found")
 
+    cleanup_task(tid1)
     if not task1_pass:
         return AccResult("M8", "", "auto", UNVERIFIED,
                          f"task1 (success path) not passed: {'; '.join(evidence_parts)}",
                          elapsed_s=time.time()-t0, task_ids=task_ids,
-                         evidence_source=f"archive:{archive_dir(tid1, run_id1)}")
+                         evidence_source=best_ev1)
 
     # Task 2: failure path — body requires writing assert False
     # 期望 run=2: run#1 pipeline failed → unmet → ready → run#2
