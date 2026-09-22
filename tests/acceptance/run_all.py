@@ -1318,7 +1318,13 @@ def check_m8() -> AccResult:
 
     # Task 1: success path — 等终态（可能多 runs: unmet → ready → done）
     tid1 = create_task("M8 CI verification (success)",
-                      body=f"repo: {PILOT_REPO}\nM8 test: CI pipeline check (success path). Write a simple Python utility module src/utils.py with a hello() function that returns 'hello'. Push to the branch given in the context file binding section. Do not choose your own branch name.",
+                      body=(f"repo: {PILOT_REPO}\n"
+                            f"M8 test: CI pipeline check (success path).\n"
+                            f"Write src/utils.py with a hello() function that returns 'hello'.\n"
+                            f"Push to the branch given in the context file binding section.\n"
+                            f"Do not choose your own branch name.\n"
+                            f"Do not create subtasks. Do not call kanban APIs. "
+                            f"Work alone: clone, branch, write, commit, push, done."),
                       skills=["talos-code-demo"])
     task_ids.append(tid1)
 
@@ -1371,7 +1377,9 @@ def check_m8() -> AccResult:
                             f"M8 test: CI pipeline check (failure path).\n"
                             f"Write a test file tests/test_fail.py that contains 'assert False'.\n"
                             f"Push to the branch given in the context file binding section.\n"
-                            f"Do not choose your own branch name."),
+                            f"Do not choose your own branch name.\n"
+                            f"Do not create subtasks. Do not call kanban APIs. "
+                            f"Work alone: clone, branch, write, commit, push, done."),
                       skills=["talos-code-demo"])
     task_ids.append(tid2)
 
@@ -2169,7 +2177,9 @@ def check_m20() -> AccResult:
                             f"M20 test: write a simple Python utility module.\n"
                             f"Create src/utils.py with a hello() function that returns 'hello'.\n"
                             f"Push to the branch given in the context file binding section.\n"
-                            f"Do not choose your own branch name."),
+                            f"Do not choose your own branch name.\n"
+                            f"Do not create subtasks. Do not call kanban APIs. "
+                            f"Work alone: clone, branch, write, commit, push, done."),
                       skills=["talos-code-demo"])
     task_ids.append(tid)
 
