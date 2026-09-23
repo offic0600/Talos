@@ -1,0 +1,41 @@
+[Unit]
+Description=Talos Executor — autonomous kanban task executor
+Documentation=https://github.com/offic0600/Talos
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+# The executor runs the tick loop: dispatch → spawn → heartbeat → adjudicate → finalize → archive → cleanup
+# Use the venv python so hermes_cli (installed via pip install -e ~/.hermes/hermes-agent) resolves
+ExecStart=/opt/talos/.venv/bin/python -m talos.executor.main
+Restart=always
+RestartSec=5
+
+# Shared environment file — contains HERMES_KANBAN_DB, TALOS_ES_URL, TALOS_GITLAB_URL, TALOS_GITLAB_ADMIN_TOKEN
+EnvironmentFile=/etc/hermes/talos.env
+
+# Run as a dedicated user (not root) — the user must be in the `docker` group
+User=talos
+Group=talos
+
+# Working directory — the Talos package root
+WorkingDirectory=/opt/talos
+
+# PYTHONPATH so `talos.*` and `hermes_cli.*` imports resolve.
+# hermes-agent is installed via: pip install -e ~/.hermes/hermes-agent
+Environment=PYTHONPATH=/opt/talos:/home/talos/.hermes/hermes-agent
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=talos-executor
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/talos/.hermes /var/log/talos
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
