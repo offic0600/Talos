@@ -1,5 +1,7 @@
 # 第三组：合并前材料
 
+> 已于 2026-09-23 合并至 main（merge commit 3bd93fc）
+
 ## 1. 全量 diff：feat/executor-v1 相对 main
 
 43 files changed, 9284 insertions(+), 377 deletions(-)
