@@ -1,6 +1,6 @@
 ---
 name: talos-ci-short-timeout
-description: "CI task with short 120s pipeline timeout for M9 testing."
+description: "CI task with short 45s pipeline timeout for M9 testing."
 resources:
   memory_mb: 1024
   cpus: 1.0
@@ -14,7 +14,7 @@ completion_contract:
   verification:
     required: true
     source: ci
-    timeout_s: 120
+    timeout_s: 45
 deliverables:
   - kind: git_branch
     repo: "${task.repo}"
@@ -27,7 +27,7 @@ credentials:
 ---
 # talos-ci-short-timeout
 
-Same as talos-code-demo but with 120s pipeline timeout (for M9 CI timeout test).
+Same as talos-code-demo but with 45s pipeline timeout (for M9 CI timeout test).
 
 ## What to do
 

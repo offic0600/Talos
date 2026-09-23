@@ -30,7 +30,7 @@
 | M6 | 承 M5：run#2 上下文含 run#1 的 error → 补做 → pass → done | talos-acc-unmet | 是 | 同 M5，两轮 |
 | M7 | 每次裁决恰好一条 [执行器] 评论，author = talos-executor | talos-acc-pass | 是 | 验评论条数 = 裁决次数 |
 | M8 | verification.source: ci：流水线 success → 通过；failed → unmet → 重拉 | talos-code-demo | 是 | `require_push: true, source: ci, credentials: gitlab`；body 首行 `repo: {PILOT_REPO}` |
-| M9 | source: ci 且流水线 15 分钟无终态 → defect 超时 → degraded | talos-code-demo | 是 | `require_push: true, source: ci, credentials: gitlab`；body 首行 `repo: {PILOT_REPO}` ✅已补 |
+| M9 | source: ci 且流水线在 timeout_s 内无终态 → defect 超时 → degraded | talos-ci-short-timeout | 是 | 触发方式：短超时（verification.timeout_s=45）+ docker stop gitlab-runner 使 pipeline pending。停 runner 在本 GitLab 实例有共享 runner 时不可复现（pipeline 仍可能被共享 runner 执行）。`require_push: true, source: ci, credentials: gitlab`；body 首行 `repo: {PILOT_REPO}` ✅已补 |
 | M10 | git ls-remote 核对 sha 一致才通过；自报错误 sha → unmet | talos-code-demo | 是 | `require_push: true, source: ci, credentials: gitlab`；body 首行 `repo: {PILOT_REPO}` ✅已改（原 talos-acc-sha-mismatch） |
 | M11 | source: evidence 的执行单元：证据账本不可读 → defect 降级 done | 不适用 | 不适用 | 黑盒下无法无侵入复现；由 tests/test_adjudicate.py 单元测试覆盖 |
 | M12 | 声明 frontmatter 非法 → 不拉容器、blocked、评论「校验器故障」 | dd1-broken-skill | 是 | 故意坏掉的 skill（无 git/verification 声明） |

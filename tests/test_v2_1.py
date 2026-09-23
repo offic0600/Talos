@@ -679,10 +679,10 @@ class TestDispatchSafety:
         import subprocess
 
         result = subprocess.run(
-            ["python3", "-m", "pytest", "tests/test_v2_1.py::TestDispatchSafety::test_talos_max_spawn_default_is_2",
+            [sys.executable, "-m", "pytest", "tests/test_v2_1.py::TestDispatchSafety::test_talos_max_spawn_default_is_2",
              "-v", "--no-header", "-x"],
             capture_output=True, text=True, timeout=30,
-            env={**__import__("os").environ, "TALOS_TEST_DB": ""},
+            env={**os.environ, "TALOS_TEST_DB": ""},
             cwd=str(Path(__file__).resolve().parent.parent),
         )
         # With TALOS_TEST_DB unset/empty, pytest should skip (message goes to stderr)

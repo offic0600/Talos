@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     idempotency_key TEXT,
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
     worker_pid INTEGER,
+    worker_started_at INTEGER,
     last_failure_error TEXT,
     max_runtime_seconds INTEGER,
     last_heartbeat_at INTEGER,
