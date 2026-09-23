@@ -144,3 +144,31 @@
 
 **实现**：执行组件声明 `requires`。拉起前缺任一绑定 → defect，不拉容器，block_task。裁决只认执行器注入的绑定值。
 **证据**：`declarations.py` `Declaration.requires` 字段 + `load_declarations()` 从 frontmatter 读取。`spawn.py` `_generate_container_config()`：绑定参数段写入 config.yaml。`adjudicate.py` `_get_injected_repo()`：从 Declaration.deliverables 取 repo URL，不从 result.json 取。验收项 M5/M20（绑定参数验证）。
+
+---
+
+## 4. 新增不变量 I12–I14（验收套件化轮次）
+
+### I12 — 验收脚本只做夹具，不做派发与裁决
+
+**实现**：`run_all.py` 只通过 `create_task` 公开 API 建任务、只读账本（get_task/get_runs/get_comments/get_events）、轮询 `wait_for_terminal`。进程内 `tick()` 只出现在 pytest 里。
+**证据**：`run_all.py` 头部 ARCHITECTURE 注释明确定义夹具边界；`grep -n 'def tick\|_dispatch\|_adjudicate\|complete_task' run_all.py` 零命中（非测试路径）。验收项 M3/M4（执行器 PID 贯穿、任务由执行器派发而非脚本派发）。
+
+### I13 — 结果表从 results.jsonl 机械生成，无手写单元格
+
+**实现**：`--render-final` 子命令从 `results.jsonl` 逐行读取，按 `_record_ts`（timestamp 优先，回退 evidence_source 中的 suite 前缀）选最新记录，生成 32 行表 + 比对表。run 数从 `task_runs` 表 COUNT 查询，不从证据文本正则提取。
+**证据**：`render_final_table()` 函数（run_all.py L3249）；`_record_ts()` 按时间戳排序；M10/M14 取 `full_run_20260921_v2` 的 ✅（suite_ts=20260921052826）。`record_result()` 自动填充 `timestamp` + `evidence_source`，不手填。
+
+### I14 — 验收脚本黑盒化：只看外部可观察量
+
+**实现**：验收脚本不读执行器源码内部状态、不调内核私有函数（`_` 前头）、不直写账本（无 UPDATE/INSERT/DELETE）。所有断言基于：DB 行（只读 SELECT）、归档文件（verdict.json/result.json/state.db）、executor.jsonl 事件日志、GitLab API、docker inspect。
+**证据**：`run_all.py` 白名单约束（L284-317）；M2 验证容器挂载表无 kanban；M25 验证令牌脱敏（`grep` key 前缀零命中）；M27 验证 `HERMES_KANBAN_DB` 未设时执行器退出。R1 规则：源码检查一律标「未验」不判 ✅。
+
+---
+
+## 5. 验收结果
+
+- **pytest**：117 passed, 0 failed（三遍：10.45s / 10.42s / 10.77s）
+- **验收套件**：31 通过 / 0 未验 / 1 不适用（M11：黑盒下无法无侵入复现，由单元测试覆盖）
+- **最终表**：`docs/dd2/ACC_TABLE_final.md`（docs 不进 git，由 `--render-final` 从 `results.jsonl` 机械生成）
+- **提交数**：feat/executor-v1 相对 main 共 80 个提交

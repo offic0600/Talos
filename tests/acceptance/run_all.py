@@ -1464,7 +1464,21 @@ def check_m9() -> AccResult:
     task_ids: list[str] = []
     evidence_parts: list[str] = []
 
-    # 1. 停掉本地 gitlab-runner（使 CI pipeline pending → 超时）
+    # 1. 停掉本地 gitlab-runner 前，先查账本有无正在跑的 source:ci 任务
+    try:
+        _pc = db_conn()
+        _running = _pc.execute(
+            "SELECT id, title FROM tasks WHERE status='running'"
+        ).fetchall()
+        _pc.close()
+        for _rt in _running:
+            _rt_title = _rt["title"] or ""
+            if "M9" not in _rt_title and SUITE_PREFIX not in _rt_title:
+                # 有非本套件的 running 任务，等待其终态再停 runner
+                wait_for_terminal(_rt["id"], timeout=300)
+    except Exception:
+        pass  # 查询失败不阻塞——最坏情况是停 runner 时有任务在跑
+
     subprocess.run(["docker", "stop", "gitlab-runner"],
                    capture_output=True, text=True, timeout=30)
     evidence_parts.append("docker stop gitlab-runner: done")
@@ -3395,13 +3409,19 @@ def render_final_table():
             # 来源前缀
             source = r.get("evidence_source", "") or r.get("timestamp", "")
             source_str = source[:30] if source else "—"
-            # run 数从 evidence 提取
-            run_count = 1
-            runs_match = _re.search(r"runs=(\d+)", ev_text)
-            if runs_match:
-                run_count = int(runs_match.group(1))
-            elif "run#2" in ev_text or "run#1" in ev_text:
-                run_count = 2
+            # run 数从 task_runs 表查计数（多任务项按主任务）
+            run_count = 0
+            if task_ids:
+                try:
+                    _rc = db_conn()
+                    _row = _rc.execute(
+                        "SELECT COUNT(*) AS cnt FROM task_runs WHERE task_id=?",
+                        (task_ids[0],)
+                    ).fetchone()
+                    run_count = _row["cnt"] if _row else 0
+                    _rc.close()
+                except Exception:
+                    run_count = 0
         else:
             cat = "—"
             conclusion = "未验"
